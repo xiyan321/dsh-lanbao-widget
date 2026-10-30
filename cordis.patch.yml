@@ -1,0 +1,22 @@
+# ============================================================================
+# dsh-lanbao-widget —— DSH bundle patch
+# ============================================================================
+# 本文件是插件的「挂载声明」：DSH 启动时按 bundle 层栈叠加各插件 patch，
+# 这里把蓝宝挂件插入 Web profile 的配置树。
+#
+# 安装（本地开发目录，推荐）：
+#   dsh plugin --profile web add link:D:\develp\test\dsh-lanbao-widget
+# 或在 profile 的 package.json 里把本包名加进 dsh.profile.bundles。
+# ============================================================================
+
+- insert:
+    - id: lanbao-widget
+      name: dsh-lanbao-widget
+      config:
+        visible: true
+        size: 184
+        right: 24
+        bottom: 200
+        bubble: true
+        bubbleMs: 6000
+        lowBalance: 10

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 语法检查：宿主端与浏览器端都是零依赖的纯 ESM，不需要装包
+      - name: Syntax check
+        run: |
+          node --check lib/index.js
+          node --check assets/lanbao-widget.js
+
+      # 离线冒烟测试：假宿主 + fetch 桩，不打真实网络，不读本机凭据
+      - name: Smoke test
+        run: node tools/smoke-test.mjs
+
+      # 素材完整性：五张表情必须都在，且体积合理
+      - name: Assets present
+        run: |
+          for n in idle thinking busy happy confused; do
+            f="assets/expressions/$n.webp"
+            test -s "$f" || { echo "缺少 $f"; exit 1; }
+          done
+          echo "表情素材齐全"
