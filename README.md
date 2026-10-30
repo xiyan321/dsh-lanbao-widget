@@ -9,13 +9,8 @@
 
 ![预览](docs/preview.png)
 
-![在真实界面里](docs/live-full.png)
-
-![点一下角色就报余额](docs/live-click.png)
-
-![右击角色打开设置菜单](docs/live-panel.png)
-
-角色设定（配色、发型、鲨鱼帽鳍等）见 [`docs/design-sheet.jpg`](docs/design-sheet.jpg)。
+角色设定（配色、发型、鲨鱼帽鳍等）：
+![](docs/design-sheet.jpg)
 
 ---
 
