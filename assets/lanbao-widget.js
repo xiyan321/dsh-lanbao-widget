@@ -15,11 +15,17 @@
   window.__dshLanbaoWidget = true
 
   // ── 常量 ──────────────────────────────────────────────
+  // 表情 URL 要带版本号：文件名是固定的（thinking.webp），换图后如果 URL 不变，
+  // 浏览器会继续用旧缓存 —— 表现就是"新旧两张图来回跳"。
+  // 宿主会在发 widget.js 时把占位符换成表情文件的真实 mtime；
+  // 宿主还没重载到新版时，退回下面这个手动版本号（换图时记得一起改）。
+  var ASSET_REV = '__LANBAO_ASSET_REV__'
+  if (ASSET_REV.indexOf('__LANBAO_') === 0) ASSET_REV = '20261030a'
   var API = {
     state: '/dsh-lanbao/state.json',
     settings: '/dsh-lanbao/settings.json',
     refresh: '/dsh-lanbao/refresh.json',
-    expr: function (name) { return '/dsh-lanbao/expr/' + name + '.webp' }
+    expr: function (name) { return '/dsh-lanbao/expr/' + name + '.webp?rev=' + ASSET_REV }
   }
   var EXPRESSIONS = ['idle', 'thinking', 'busy', 'happy', 'confused']
   var LABEL = { idle: '待机', thinking: '思考', busy: '忙碌', happy: '开心', confused: '疑惑' }
@@ -35,6 +41,10 @@
   var POLL_MS = 1200
   var IDLE_CHAT_MIN = 75000
   var IDLE_CHAT_MAX = 155000
+  // 余额冒泡：随机间隔 3~8 分钟，每次亮 4.5 秒
+  var BALANCE_MIN = 180000
+  var BALANCE_MAX = 480000
+  var BALANCE_TTL = 4500
   var POS_KEY = 'dsh-lanbao:pos'
   var GREET_KEY = 'dsh-lanbao:greeted'
   var REDUCED = false
@@ -137,6 +147,7 @@
   var firstRun = true
   var pollTimer = 0
   var idleChatTimer = 0
+  var randomBalanceTimer = 0
   var bubble = { priority: -1, until: 0 }
   var condenseTimer = 0
   var dragging = null
@@ -213,6 +224,10 @@
     '    <label>气泡台词</label>',
     '    <button class="lbd-toggle" type="button" data-toggle="bubble">开</button>',
     '  </div>',
+    '  <div class="lbd-row">',
+    '    <label>余额</label>',
+    '    <button class="lbd-open-detail" type="button">查看详情</button>',
+    '  </div>',
     '  <div class="lbd-row lbd-row-end">',
     '    <button class="lbd-hide" type="button">隐藏蓝宝</button>',
     '    <span class="lbd-hint">右键角色可再打开</span>',
@@ -245,14 +260,17 @@
     '  opacity:0;transform:translateY(8px) scale(.9);transform-origin:80% 100%;',
     '  transition:opacity .2s ease,transform .24s cubic-bezier(.2,1.3,.4,1),padding .2s ease,background .2s ease;}',
     '.lbd-bubble.is-show{opacity:1;transform:translateY(0) scale(1)}',
+    // 没展开时整颗气泡不接事件，避免挡住下面的页面
+    '.lbd-bubble:not(.is-show){pointer-events:none}',
     '.lbd-bubble:hover{box-shadow:0 12px 30px rgba(24,46,86,.22)}',
     '.lbd-bubble.is-warn{background:#fff8e6;border-color:rgba(196,138,20,.42);color:#6b4a00}',
     '.lbd-bubble.is-error{background:#fff0f0;border-color:rgba(196,52,52,.36);color:#7a1f1f}',
     '.lbd-bubble.is-happy{background:#eef8ff;border-color:rgba(38,96,180,.24);color:#123a6b}',
-    // 不说话时收成小胶囊，只留余额
-    '.lbd-bubble.is-compact{align-self:flex-end;padding:6px 13px}',
-    '.lbd-bubble.is-compact .lbd-speech{display:none}',
-    '.lbd-bubble.is-compact .lbd-bubble-balance{border-top:0;margin-top:0;padding-top:0}',
+    // 只显示余额（点角色 / 随机 / 回合结束）：隐藏台词行，去掉分隔线
+    '.lbd-bubble.is-balance-only .lbd-speech{display:none}',
+    '.lbd-bubble.is-balance-only .lbd-bubble-balance{border-top:0;margin-top:0;padding-top:0}',
+    // 只说话、不提余额（思考 / 忙碌 / 闲聊）
+    '.lbd-bubble.no-balance .lbd-bubble-balance{display:none}',
     '.lbd-speech{line-height:1.5;max-width:100%}',
     '.lbd-dots{display:none;margin-left:4px;gap:3px;vertical-align:middle}',
     '.lbd-bubble.is-thinking .lbd-dots{display:inline-flex}',
@@ -306,6 +324,9 @@
     '.lbd-toggle{border:1px solid rgba(38,74,140,.18);background:#fff;border-radius:8px;padding:3px 12px;font:inherit;',
     '  font-size:12px;color:#2a3d5c;cursor:pointer;min-width:52px}',
     '.lbd-toggle.is-on{background:rgba(61,123,214,.12);border-color:rgba(61,123,214,.4);color:#1d4e96}',
+    '.lbd-open-detail{border:1px solid rgba(38,74,140,.18);background:#fff;border-radius:8px;padding:3px 10px;font:inherit;',
+    '  font-size:12px;color:#2a3d5c;cursor:pointer}',
+    '.lbd-open-detail:hover{background:rgba(61,123,214,.08)}',
     '.lbd-row-end{border-top:1px solid rgba(38,74,140,.1);padding-top:9px;margin-top:1px}',
     '.lbd-hide{border:0;background:transparent;color:#a03636;font:inherit;font-size:12px;cursor:pointer;padding:2px 4px;border-radius:6px}',
     '.lbd-hide:hover{background:rgba(196,52,52,.09)}',
@@ -477,48 +498,65 @@
 
   // ── 气泡 ──────────────────────────────────────────────
   /**
-   * 气泡有两种形态：
-   *  - 展开：一句台词 + 余额；
-   *  - 收起（is-compact）：只留余额小胶囊。
-   * 关掉「气泡台词」后只走收起形态，余额照常可见。
+   * 气泡平时是完全收起的（不占视觉、也不挡鼠标）。
+   * 出现只有三种由头：
+   *  1. 情境台词（思考 / 忙碌 / 完成 / 出错）；
+   *  2. 余额：点一下角色、随机冒泡、对话跑完；
+   *  3. 余额告警（偏低 / 见底 / 读不到）。
+   * 余额行按需开关，不再常驻。
    */
-  function condense() {
+  function presentBubble(opts) {
+    var o = opts || {}
+    bubbleEl.classList.toggle('is-balance-only', !o.speech)
+    bubbleEl.classList.toggle('no-balance', !o.balance)
+    bubbleEl.classList.toggle('is-thinking', !!o.thinking)
+    bubbleEl.classList.toggle('is-warn', o.tone === 'warn')
+    bubbleEl.classList.toggle('is-error', o.tone === 'error')
+    bubbleEl.classList.toggle('is-happy', o.tone === 'happy')
+    speechText.textContent = o.speech || ''
+    bubbleEl.classList.add('is-show')
     window.clearTimeout(condenseTimer)
-    bubbleEl.classList.add('is-compact')
-    bubbleEl.classList.remove('is-thinking')
-    // 收起时把台词清掉：否则关掉台词开关后旧文字还留在 DOM 里
-    speechText.textContent = ''
-    bubble.priority = -1
-    if (!bubbleEl.classList.contains('is-show')) bubbleEl.classList.add('is-show')
+    condenseTimer = window.setTimeout(hideBubble, o.ttl || settings.bubbleMs)
     schedulePositionTail()
   }
 
+  /** 情境台词。关掉「气泡台词」后不再说话，但不影响余额冒泡。 */
   function showBubble(text, options) {
     var opts = options || {}
-    if (!settings.bubble || !text) {
-      // 台词关了也要让余额露出来
-      condense()
-      return
-    }
+    if (!settings.bubble || !text) return
     var priority = opts.priority === undefined ? 1 : opts.priority
     var now = Date.now()
     if (priority < bubble.priority && now < bubble.until) return
     bubble.priority = priority
     bubble.until = now + (opts.ttl || settings.bubbleMs)
-    bubbleTextSet(text)
-    bubbleEl.classList.remove('is-compact')
-    bubbleEl.classList.add('is-show')
-    bubbleEl.classList.toggle('is-warn', opts.tone === 'warn')
-    bubbleEl.classList.toggle('is-error', opts.tone === 'error')
-    bubbleEl.classList.toggle('is-happy', opts.tone === 'happy')
-    bubbleEl.classList.toggle('is-thinking', !!opts.thinking)
-    window.clearTimeout(condenseTimer)
-    condenseTimer = window.setTimeout(condense, opts.ttl || settings.bubbleMs)
-    schedulePositionTail()
+    presentBubble({
+      speech: text,
+      balance: !!opts.balance,
+      tone: opts.tone,
+      thinking: opts.thinking,
+      ttl: opts.ttl || settings.bubbleMs
+    })
   }
 
-  function bubbleTextSet(text) {
-    speechText.textContent = text
+  /** 只把余额亮出来（点角色 / 随机 / 回合结束）。不受「气泡台词」开关影响。 */
+  function showBalance(options) {
+    var opts = options || {}
+    var level = balanceLevel()
+    bubble.priority = opts.priority === undefined ? 2 : opts.priority
+    bubble.until = Date.now() + (opts.ttl || BALANCE_TTL)
+    presentBubble({
+      speech: null,
+      balance: true,
+      tone: opts.tone || (level === 'low' ? 'warn' : level === 'error' || level === 'empty' ? 'error' : undefined),
+      ttl: opts.ttl || BALANCE_TTL
+    })
+  }
+
+  function hideBubble() {
+    window.clearTimeout(condenseTimer)
+    bubbleEl.classList.remove('is-show')
+    speechText.textContent = ''
+    bubble.priority = -1
   }
 
   /**
@@ -674,6 +712,7 @@
       return
     }
 
+    // 注意各分支的 balance 标记：只有和钱有关的才把余额行带出来
     switch (view.reason) {
       case 'tool':
         showBubble(pick('tool') + (view.detail ? '（' + view.detail + '）' : ''), { priority: 1 })
@@ -682,7 +721,7 @@
         showBubble(pick('turn'), { priority: 1, thinking: true, ttl: Math.max(settings.bubbleMs, 5000) })
         break
       case 'turn-completed':
-        showBubble(pick('completed'), { priority: 2, tone: 'happy' })
+        showBubble(pick('completed'), { priority: 2, tone: 'happy', balance: true })
         break
       case 'turn-failed':
         showBubble(view.detail ? pick('failed') + '（' + view.detail + '）' : pick('failed'), { priority: 4, tone: 'error', ttl: 9000 })
@@ -698,13 +737,13 @@
         showBubble(pick('stopped'), { priority: 2 })
         break
       case 'balance-error':
-        showBubble(pick('balanceError'), { priority: 4, tone: 'error', ttl: 12000 })
+        showBubble(pick('balanceError'), { priority: 4, tone: 'error', ttl: 12000, balance: true })
         break
       case 'balance-empty':
-        showBubble(pick('empty'), { priority: 4, tone: 'error' })
+        showBubble(pick('empty'), { priority: 4, tone: 'error', balance: true })
         break
       case 'balance-low':
-        showBubble(pick('low'), { priority: 3, tone: 'warn' })
+        showBubble(pick('low'), { priority: 3, tone: 'warn', balance: true })
         break
       case 'idle':
       default:
@@ -770,6 +809,25 @@
     }, wait)
   }
 
+  /**
+   * 随机亮一下余额（3~8 分钟一次）。
+   * 正在干活、弹层开着、气泡已经在说话、或者余额根本读不到时都跳过，
+   * 免得在忙的时候插嘴或者反复报错。
+   */
+  function scheduleRandomBalance() {
+    window.clearTimeout(randomBalanceTimer)
+    var wait = BALANCE_MIN + Math.random() * (BALANCE_MAX - BALANCE_MIN)
+    randomBalanceTimer = window.setTimeout(function () {
+      var level = balanceLevel()
+      var quiet = !bubbleEl.classList.contains('is-show')
+      var usable = level === 'ok' || level === 'low' || level === 'empty'
+      if (document.visibilityState === 'visible' && quiet && usable && !openPopover && view.phase === 'idle') {
+        showBalance({ priority: 2 })
+      }
+      scheduleRandomBalance()
+    }, wait)
+  }
+
   function poll() {
     fetch(API.state, { credentials: 'same-origin', cache: 'no-store' })
       .then(function (res) { return res.json() })
@@ -790,10 +848,10 @@
           try {
             if (!window.localStorage.getItem(GREET_KEY)) {
               window.localStorage.setItem(GREET_KEY, '1')
-              showBubble(pick('first'), { priority: 5, ttl: 5200 })
+              showBubble(pick('first'), { priority: 5, ttl: 5200, balance: true })
             }
           } catch (e) {
-            showBubble(pick('first'), { priority: 5, ttl: 5200 })
+            showBubble(pick('first'), { priority: 5, ttl: 5200, balance: true })
           }
         }
       })
@@ -832,13 +890,18 @@
   }
 
   // ── 交互：角色 ────────────────────────────────────────
+  /** 点一下 = 摸摸头；同时把余额亮出来（"我主动点击"这条由头）。 */
   function pet() {
     setPhase('happy')
     actor.classList.add('is-happy')
-    showBubble(pick('pet'), { priority: 5, tone: 'happy', ttl: 4200 })
+    if (settings.bubble) {
+      showBubble(pick('pet'), { priority: 5, tone: 'happy', ttl: 4600, balance: true })
+    } else {
+      showBalance({ priority: 5, tone: 'happy', ttl: BALANCE_TTL })
+    }
     window.setTimeout(function () {
       if (view.phase !== 'happy') setPhase(view.phase)
-    }, 4200)
+    }, 4600)
   }
 
   actor.addEventListener('click', function (event) {
@@ -992,15 +1055,24 @@
   toggleBtn.addEventListener('click', function () {
     var on = !settings.bubble
     persistSettings({ bubble: on })
-    if (!on) condense()
-    else showBubble(pick('idle'), { priority: 2 })
+    if (!on) {
+      hideBubble()
+      // 关掉台词不代表不报余额：先把当前余额亮一下，让用户知道差别
+      showBalance({ priority: 2 })
+    } else {
+      showBubble(pick('idle'), { priority: 2 })
+    }
+  })
+
+  menu.querySelector('.lbd-open-detail').addEventListener('click', function () {
+    closePopovers()
+    showPopover('detail', actor)
   })
 
   menu.querySelector('.lbd-hide').addEventListener('click', function () {
     persistSettings({ visible: false })
     closePopovers()
-    condense()
-    bubbleEl.classList.remove('is-show')
+    hideBubble()
   })
 
   restoreBtn.addEventListener('click', function () {
@@ -1043,12 +1115,19 @@
   preload()
   setPhase('idle')
   renderBalance()
-  condense()
-  bubbleEl.classList.add('is-show')
+  // 余额不常驻：气泡默认收起，等点击 / 随机 / 对话结束再出来
+  hideBubble()
   poll()
   scheduleIdleChat()
+  scheduleRandomBalance()
 
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible') poll()
   })
+
+  // 排障/测试用：手动让余额冒一次泡（随机那一档要等 3~8 分钟，不方便验证）
+  window.__dshLanbao = {
+    pingBalance: function () { showBalance({ priority: 2 }) },
+    hide: hideBubble
+  }
 })()

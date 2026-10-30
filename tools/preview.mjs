@@ -158,7 +158,8 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/dsh-lanbao/widget.js') {
     res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' })
-    res.end(fs.readFileSync(path.join(ROOT, 'assets', 'lanbao-widget.js')))
+    // 和宿主一样，把占位符换成版本号
+    res.end(fs.readFileSync(path.join(ROOT, 'assets', 'lanbao-widget.js'), 'utf8').split('__LANBAO_ASSET_REV__').join('dev'))
     return
   }
   const expr = /^\/dsh-lanbao\/expr\/([a-z]+)\.webp$/.exec(url.pathname)
@@ -260,6 +261,16 @@ await page.screenshot({
 })
 console.log('截图 menu（右击角色）')
 
+// 只有余额的冒泡（点击 / 随机 / 对话结束都是这个形态）
+await page.goto(`${base}/__phase?phase=idle`, { waitUntil: 'domcontentloaded' })
+await page.goto(`${base}/?theme=light`, { waitUntil: 'networkidle2' })
+await waitReady()
+await page.evaluate(() => window.__dshLanbao.pingBalance())
+await delay(420)
+const balanceFile = path.join(SHOTS, 'light-balance.png')
+await page.screenshot({ path: balanceFile, clip: CLIP })
+console.log('截图 light-balance（只显示余额）')
+
 // 整页
 await page.goto(`${base}/__phase?phase=busy`, { waitUntil: 'domcontentloaded' })
 await page.goto(`${base}/?theme=light`, { waitUntil: 'networkidle2' })
@@ -283,11 +294,14 @@ const expect = (label, ok, extra) => {
 const readState = () =>
   page.evaluate(() => {
     const q = (sel) => document.querySelector(sel)
+    const bubble = q('.lbd-bubble')
     return {
       actorClass: q('.lbd-actor').className,
       actorWidth: q('.lbd-actor').style.width,
-      bubbleShown: q('.lbd-bubble').classList.contains('is-show'),
-      bubbleCompact: q('.lbd-bubble').classList.contains('is-compact'),
+      bubbleShown: bubble.classList.contains('is-show'),
+      balanceOnly: bubble.classList.contains('is-balance-only'),
+      noBalance: bubble.classList.contains('no-balance'),
+      balanceRowDisplay: getComputedStyle(q('.lbd-bubble-balance')).display,
       speech: q('.lbd-speech-text').textContent,
       balance: q('.lbd-balance-text').textContent,
       detailHidden: q('.lbd-detail').hidden,
@@ -305,54 +319,74 @@ const reload = async (phase, theme = 'light') => {
   await waitReady()
 }
 
+const pingBalance = () => page.evaluate(() => window.__dshLanbao.pingBalance())
+
 // 重新装一次页面，让状态干净
 liveSettings = { visible: true, size: 184, right: 24, bottom: 200, bubble: true, bubbleMs: 1200, lowBalance: 10 }
 await reload('idle')
+await delay(400)
 
-// 首屏：气泡常驻，且里面就带余额
+// ① 平时不显示余额
 let st = await readState()
-expect('气泡常驻显示', st.bubbleShown === true)
-expect('气泡里带余额', /¥|—|失败/.test(st.balance), st.balance)
+expect('默认不显示气泡', st.bubbleShown === false, `shown=${st.bubbleShown}`)
 
-// 点一下 → 开心 + 台词
+// ② 主动点击 → 台词 + 余额
 await page.click('.lbd-actor')
 await delay(320)
 st = await readState()
 expect('点一下变开心表情', st.actorClass.includes('is-happy'), st.actorClass)
-expect('点一下有回应台词', st.speech.length > 0 && !st.bubbleCompact, st.speech)
+expect('点一下出现台词', st.speech.length > 0 && !st.balanceOnly, st.speech)
+expect('点一下同时显示余额', !st.noBalance && st.balanceRowDisplay !== 'none', st.balance)
 
-// 台词过一会儿收成只显示余额的小胶囊
-await delay(4600)
+// ③ 过一会儿整颗气泡收掉（不是留个胶囊）
+await delay(4400)
 st = await readState()
-expect('台词自动收成小胶囊', st.bubbleCompact === true)
-expect('收起后仍显示余额', /¥|—|失败/.test(st.balance), st.balance)
+expect('台词结束后气泡整个收起', st.bubbleShown === false)
 
-// 点气泡 → 余额详情
+// ④ 随机/对话结束那一档：只有余额，没有说话
+await pingBalance()
+await delay(260)
+st = await readState()
+expect('余额可以单独冒泡', st.bubbleShown === true && st.balanceOnly === true, `speech="${st.speech}"`)
+expect('单独冒泡时余额可见', st.balanceRowDisplay !== 'none', st.balance)
+
+// ⑤ 点气泡 → 余额详情
 await page.click('.lbd-bubble')
 await delay(300)
 st = await readState()
 expect('点气泡打开余额详情', st.detailHidden === false)
-expect('详情里有余额数字', st.detailNum !== '—' || st.detailNum.length > 0, st.detailNum)
+expect('详情里有余额数字', st.detailNum.length > 0 && st.detailNum !== '—', st.detailNum)
 
-// 详情里的刷新
+// ⑥ 详情里的刷新
 await page.click('.lbd-refresh')
 await delay(700)
 const refreshLabel = await page.$eval('.lbd-refresh', (el) => el.textContent)
 expect('详情里能刷新余额', refreshLabel === '刷新', refreshLabel)
 
-// Esc 关闭
+// ⑦ Esc 关闭
 await page.keyboard.press('Escape')
 await delay(220)
 st = await readState()
 expect('Esc 关闭详情', st.detailHidden === true)
 
-// 右击角色 → 设置菜单
+// ⑧ 右击角色 → 设置菜单
 await page.click('.lbd-actor', { button: 'right' })
 await delay(300)
 st = await readState()
 expect('右击角色弹出设置菜单', st.menuHidden === false)
 
-// 改大小
+// ⑨ 菜单里的「查看详情」也能进余额详情
+await page.click('.lbd-open-detail')
+await delay(300)
+st = await readState()
+expect('菜单能打开余额详情', st.detailHidden === false && st.menuHidden === true)
+await page.keyboard.press('Escape')
+await delay(220)
+
+// ⑩ 改大小
+await page.click('.lbd-actor', { button: 'right' })
+await delay(280)
+st = await readState()
 const beforeSize = parseFloat(st.actorWidth)
 await page.click('[data-size="1"]')
 await delay(420)
@@ -360,22 +394,22 @@ st = await readState()
 expect('菜单 + 号放大角色', parseFloat(st.actorWidth) === beforeSize + 16, `${beforeSize} → ${st.actorWidth}`)
 expect('大小写回后端', liveSettings.size === beforeSize + 16, String(liveSettings.size))
 
-// 阈值
+// ⑪ 阈值
 await page.click('[data-threshold="1"]')
 await delay(420)
 expect('低余额阈值写回后端', liveSettings.lowBalance === 15, String(liveSettings.lowBalance))
 
-// 关台词：只影响说话，余额照样在
+// ⑫ 关台词：还能报余额，但不再说话
 await page.click('[data-toggle="bubble"]')
 await delay(300)
 await page.click('.lbd-actor')
 await delay(360)
 st = await readState()
-expect('关掉台词后不再说话', st.speech === '' && st.bubbleCompact === true, `speech="${st.speech}"`)
-expect('关掉台词后余额还看得见', /¥|—|失败/.test(st.balance), st.balance)
+expect('关掉台词后不再说话', st.speech === '' && st.balanceOnly === true, `speech="${st.speech}"`)
+expect('关掉台词后点一下仍报余额', st.bubbleShown === true && st.balanceRowDisplay !== 'none', st.balance)
 expect('台词开关写回后端', liveSettings.bubble === false, String(liveSettings.bubble))
 
-// 恢复台词
+// ⑬ 恢复台词
 if (await page.$eval('.lbd-menu', (el) => el.hidden)) {
   await page.click('.lbd-actor', { button: 'right' })
   await delay(250)
@@ -384,7 +418,7 @@ await page.click('[data-toggle="bubble"]')
 await delay(300)
 expect('台词可以再打开', liveSettings.bubble === true)
 
-// 隐藏 / 恢复
+// ⑭ 隐藏 / 恢复
 if (await page.$eval('.lbd-menu', (el) => el.hidden)) {
   await page.click('.lbd-actor', { button: 'right' })
   await delay(250)
@@ -400,7 +434,7 @@ st = await readState()
 expect('点恢复按钮叫回蓝宝', st.rootHidden === false)
 expect('恢复写回后端', liveSettings.visible === true)
 
-// 拖动
+// ⑮ 拖动
 const box = await page.$eval('.lbd-actor', (el) => {
   const r = el.getBoundingClientRect()
   return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
@@ -416,11 +450,12 @@ expect('拖动改变位置', Math.abs(st.right - beforeDrag.right) > 60, `${befo
 expect('拖动后位置写回后端', Math.abs((liveSettings.right || 0) - st.right) < 6, `${liveSettings.right} vs ${st.right}`)
 expect('拖动不会误触发摸摸头', !st.actorClass.includes('is-happy'), st.actorClass)
 
-// 余额读取失败
+// ⑯ 余额读取失败
 await reload('error')
-await delay(700)
+await pingBalance()
+await delay(300)
 st = await readState()
-expect('余额读取失败在气泡里提示', /失败/.test(st.balance), st.balance)
+expect('余额读取失败会冒泡提示', st.bubbleShown === true && /失败/.test(st.balance), st.balance)
 await page.click('.lbd-bubble')
 await delay(300)
 st = await readState()
@@ -432,24 +467,19 @@ console.log(failed.length === 0 ? '✅ 交互回归全部通过' : `❌ ${failed
 await browser.close()
 server.close()
 
-// 合成验收大图：4 列 × 2 行
+// 合成验收大图：4 列，行数按实际张数算（之前多出来的会被画到画布外）
 const TILE_W = 300
 const TILE_H = 418
-const rows = [shotFiles, [darkIdle, darkLow, detailFile, menuFile]]
-const tiles = []
-rows.forEach((row, r) => {
-  row.forEach((file, c) => {
-    tiles.push({ input: file, left: c * TILE_W, top: r * TILE_H })
-  })
-})
-const sheetW = TILE_W * 4
-const sheetH = TILE_H * rows.length
+const COLS = 4
+const gallery = [...shotFiles, balanceFile, darkIdle, darkLow, detailFile, menuFile]
+const sheetW = TILE_W * COLS
+const sheetH = TILE_H * Math.ceil(gallery.length / COLS)
 const layers = []
-for (const tile of tiles) {
+for (let i = 0; i < gallery.length; i++) {
   layers.push({
-    input: await sharp(tile.input).resize(TILE_W, TILE_H, { fit: 'cover', position: 'right bottom' }).toBuffer(),
-    left: tile.left,
-    top: tile.top,
+    input: await sharp(gallery[i]).resize(TILE_W, TILE_H, { fit: 'cover', position: 'right bottom' }).toBuffer(),
+    left: (i % COLS) * TILE_W,
+    top: Math.floor(i / COLS) * TILE_H,
   })
 }
 await sharp({ create: { width: sheetW, height: sheetH, channels: 3, background: { r: 244, g: 246, b: 250 } } })

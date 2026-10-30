@@ -33,7 +33,7 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/dsh-lanbao/widget.js') {
     res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' })
-    res.end(fs.readFileSync(path.join(ROOT, 'assets', 'lanbao-widget.js')))
+    res.end(fs.readFileSync(path.join(ROOT, 'assets', 'lanbao-widget.js'), 'utf8').split('__LANBAO_ASSET_REV__').join('dev'))
     return
   }
   const m = /^\/dsh-lanbao\/expr\/([a-z]+)\.webp$/.exec(url.pathname)
