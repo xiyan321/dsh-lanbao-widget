@@ -40,11 +40,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/你的GitHub用户名/dsh-lanbao-widget.git"
+    "url": "git+https://github.com/xiyan321/dsh-lanbao-widget.git"
   },
-  "homepage": "https://github.com/你的GitHub用户名/dsh-lanbao-widget#readme",
+  "homepage": "https://github.com/xiyan321/dsh-lanbao-widget#readme",
   "bugs": {
-    "url": "https://github.com/你的GitHub用户名/dsh-lanbao-widget/issues"
+    "url": "https://github.com/xiyan321/dsh-lanbao-widget/issues"
   },
   "publishConfig": {
     "access": "public"

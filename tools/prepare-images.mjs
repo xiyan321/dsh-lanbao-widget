@@ -13,13 +13,10 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import { loadSharp } from './lib/deps.mjs'
 
-// sharp 装在 DSH web profile 里，借它解码/编码，避免本包再依赖原生模块。
-const PROFILE_PKG = path.join(process.env.USERPROFILE || process.env.HOME || '', '.dsh', 'profiles', 'web', 'package.json')
-const require = createRequire(PROFILE_PKG)
-const sharp = require('sharp')
+const sharp = loadSharp()
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = path.resolve(HERE, '..', 'assets', 'expressions')

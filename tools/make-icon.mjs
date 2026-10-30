@@ -1,12 +1,17 @@
-/** 生成插件图标：把「开心」表情放在柔和的蓝底圆角方块上。 */
-import { createRequire } from 'node:module'
+/**
+ * 生成插件图标：把「开心」表情放在柔和的蓝底圆角方块上。
+ *
+ * 用法：node tools/make-icon.mjs
+ * 产物：icon.png
+ */
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { loadSharp } from './lib/deps.mjs'
 
-const require = createRequire('C:/Users/lenovo/.dsh/profiles/web/package.json')
-const sharp = require('sharp')
+const sharp = loadSharp()
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-const ROOT = 'D:/develp/test/dsh-lanbao-widget'
-
-const face = await sharp(`${ROOT}/assets/expressions/happy.webp`)
+const face = await sharp(path.join(ROOT, 'assets', 'expressions', 'happy.webp'))
   .resize(224, 224, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
   .toBuffer()
 
@@ -23,6 +28,6 @@ const bg = Buffer.from(
 await sharp(bg)
   .composite([{ input: face, left: 16, top: 22 }])
   .png()
-  .toFile(`${ROOT}/icon.png`)
+  .toFile(path.join(ROOT, 'icon.png'))
 
 console.log('icon.png 已生成')

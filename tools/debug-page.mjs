@@ -2,13 +2,13 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
-import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+import { loadPuppeteer, findBrowser } from './lib/deps.mjs'
 
-const require = createRequire('C:/Users/lenovo/.dsh/profiles/web/package.json')
-const puppeteer = require('puppeteer-core')
+const puppeteer = loadPuppeteer()
 
-const ROOT = 'D:/develp/test/dsh-lanbao-widget'
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const EDGE = findBrowser()
 
 const STATE = {
   ok: true, at: Date.now(), version: '1.0.0', phase: 'idle', reason: 'idle', detail: null,

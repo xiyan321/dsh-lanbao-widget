@@ -184,35 +184,35 @@ dsh-lanbao-widget/
 
 ```powershell
 node tools/smoke-test.mjs     # 宿主端：状态机 / 余额分档 / 越权 / 缓存
-node tools/preview.mjs        # 浏览器端：五种情境截图 + 16 项交互回归
+node tools/preview.mjs        # 浏览器端：五种情境截图 + 29 项交互回归
 node tools/prepare-images.mjs # 换设计稿后重出表情（LANBAO_SRC 可指定目录）
 ```
 
-`preview.mjs` 需要本机有 Edge 与 `sharp`；`smoke-test.mjs` 零依赖，CI 里跑的就是它
+`preview.mjs` 需要有 Chromium 系浏览器（Edge / Chrome）以及 `sharp`、`puppeteer-core`
+（`tools/lib/deps.mjs` 会先按普通模块找，找不到就去 DSH 的 web profile 里借；也可以用
+`LANBAO_BROWSER=<路径>` 指定浏览器）。`smoke-test.mjs` 零依赖，CI 里跑的就是它
 （见 `.github/workflows/ci.yml`）。
 
 ## 九、发布到 GitHub / npm
 
-仓库已具备：`LICENSE`（MIT）、`PROVENANCE.md`、`.gitignore`、CI、`files` 白名单、
-`engines.dsh` 兼容声明、`cordis.patch.yml` 示例配置。
+仓库地址：<https://github.com/xiyan321/dsh-lanbao-widget>
 
-发布前替换这几处占位符（现在只有 GitHub 用户名还是占位的）：
-
-- `package.json` 的 `repository` / `homepage` / `bugs` —— 里的 `你的GitHub用户名`
-- `LICENSE` 与 `package.json` 的 `author` 已填 `李苒`，想用别的署名就改这两处
-
-然后：
+日常提交：
 
 ```powershell
-git init
-git add .
-git commit -m "feat: 蓝宝挂件 1.0.0"
-git branch -M main
-git remote add origin https://github.com/<你的用户名>/dsh-lanbao-widget.git
-git push -u origin main
-
-npm publish            # 按 files 白名单打包，可先 npm pack 看内容
+git add -A
+git commit -m "feat: ..."
+git push
 ```
+
+发布到 npm（可选）：
+
+```powershell
+npm pack --dry-run   # 先看会打包哪些文件
+npm publish          # 按 files 白名单打包
+```
+
+发布前只剩署名可改：`LICENSE` 与 `package.json` 的 `author` 目前都是 `李苒`。
 
 `tools/private/`（本机验证脚本，会读写 `~/.dsh` 凭据）已被 `.gitignore` 排除，不会进仓库。
 

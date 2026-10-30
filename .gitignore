@@ -5,8 +5,9 @@ pnpm-lock.yaml.bak
 # 本地私有脚本：会读取 ~/.dsh 凭据给本机请求签名，不适合随仓库公开
 tools/private/
 
-# 生成的截图（README 用的是 docs/ 下挑好的那几张）
+# 生成的截图与对比图（README 用的是 docs/ 下挑好的那几张）
 tools/shots/
+tools/contact-sheet.png
 
 # 系统与编辑器
 .DS_Store

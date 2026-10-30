@@ -8,12 +8,11 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
-import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import { loadPuppeteer, loadSharp, findBrowser } from './lib/deps.mjs'
 
-const require = createRequire('C:/Users/lenovo/.dsh/profiles/web/package.json')
-const puppeteer = require('puppeteer-core')
-const sharp = require('sharp')
+const puppeteer = loadPuppeteer()
+const sharp = loadSharp()
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
@@ -22,7 +21,7 @@ fs.rmSync(SHOTS, { recursive: true, force: true })
 fs.mkdirSync(SHOTS, { recursive: true })
 
 const EXPRESSIONS = ['idle', 'thinking', 'busy', 'happy', 'confused']
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
+const EDGE = findBrowser()
 
 function pageHtml(theme) {
   const dark = theme === 'dark'
