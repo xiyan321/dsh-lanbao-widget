@@ -197,8 +197,8 @@ page.on('pageerror', (err) => problems.push(`pageerror: ${err.message}`))
 async function waitReady() {
   await page.waitForFunction(() => {
     const img = document.querySelector('.lbd-img.is-front')
-    const chip = document.querySelector('.lbd-chip-text')
-    return Boolean(img && img.naturalWidth > 0 && chip && chip.textContent.indexOf('—') === -1)
+    const balance = document.querySelector('.lbd-balance-text')
+    return Boolean(img && img.naturalWidth > 0 && balance && balance.textContent.indexOf('—') === -1)
   }, { timeout: 15000 })
   await delay(650)
 }
@@ -234,18 +234,31 @@ for (const [phase] of phases) {
 const darkIdle = await shot('dark-idle', 'idle', 'dark')
 const darkLow = await shot('dark-low', 'low', 'dark')
 
-// 面板
+// 余额详情（点气泡）
 await page.goto(`${base}/__phase?phase=low`, { waitUntil: 'domcontentloaded' })
 await page.goto(`${base}/?theme=light`, { waitUntil: 'networkidle2' })
 await waitReady()
-await page.click('.lbd-chip')
+await page.click('.lbd-bubble')
 await delay(450)
-const panelFile = path.join(SHOTS, 'panel.png')
+const detailFile = path.join(SHOTS, 'detail.png')
 await page.screenshot({
-  path: panelFile,
-  clip: { x: VIEW.width - 470, y: VIEW.height - 820, width: 470, height: 820 },
+  path: detailFile,
+  clip: { x: VIEW.width - 470, y: VIEW.height - 780, width: 470, height: 780 },
 })
-console.log('截图 panel')
+console.log('截图 detail（点气泡）')
+
+// 设置菜单（右击角色）
+await page.goto(`${base}/__phase?phase=busy`, { waitUntil: 'domcontentloaded' })
+await page.goto(`${base}/?theme=light`, { waitUntil: 'networkidle2' })
+await waitReady()
+await page.click('.lbd-actor', { button: 'right' })
+await delay(450)
+const menuFile = path.join(SHOTS, 'menu.png')
+await page.screenshot({
+  path: menuFile,
+  clip: { x: VIEW.width - 470, y: VIEW.height - 780, width: 470, height: 780 },
+})
+console.log('截图 menu（右击角色）')
 
 // 整页
 await page.goto(`${base}/__phase?phase=busy`, { waitUntil: 'domcontentloaded' })
@@ -268,69 +281,114 @@ const expect = (label, ok, extra) => {
 }
 
 const readState = () =>
-  page.evaluate(() => ({
-    actorClass: document.querySelector('.lbd-actor').className,
-    actorWidth: document.querySelector('.lbd-actor').style.width,
-    bubbleShown: document.querySelector('.lbd-bubble').classList.contains('is-show'),
-    bubbleText: document.querySelector('.lbd-bubble-text').textContent,
-    panelHidden: document.querySelector('.lbd-panel').hidden,
-    rootHidden: document.querySelector('.lbd-root').classList.contains('is-hidden'),
-    restoreDisplay: getComputedStyle(document.querySelector('.lbd-restore')).display,
-    right: parseFloat(document.querySelector('.lbd-root').style.right) || 0,
-    bottom: parseFloat(document.querySelector('.lbd-root').style.bottom) || 0,
-    chip: document.querySelector('.lbd-chip-text').textContent,
-  }))
+  page.evaluate(() => {
+    const q = (sel) => document.querySelector(sel)
+    return {
+      actorClass: q('.lbd-actor').className,
+      actorWidth: q('.lbd-actor').style.width,
+      bubbleShown: q('.lbd-bubble').classList.contains('is-show'),
+      bubbleCompact: q('.lbd-bubble').classList.contains('is-compact'),
+      speech: q('.lbd-speech-text').textContent,
+      balance: q('.lbd-balance-text').textContent,
+      detailHidden: q('.lbd-detail').hidden,
+      detailNum: q('.lbd-detail-num').textContent,
+      menuHidden: q('.lbd-menu').hidden,
+      rootHidden: q('.lbd-root').classList.contains('is-hidden'),
+      restoreDisplay: getComputedStyle(q('.lbd-restore')).display,
+      right: parseFloat(q('.lbd-root').style.right) || 0,
+    }
+  })
+
+const reload = async (phase, theme = 'light') => {
+  await page.goto(`${base}/__phase?phase=${phase}`, { waitUntil: 'domcontentloaded' })
+  await page.goto(`${base}/?theme=${theme}`, { waitUntil: 'networkidle2' })
+  await waitReady()
+}
 
 // 重新装一次页面，让状态干净
-liveSettings = { visible: true, size: 184, right: 24, bottom: 200, bubble: true, bubbleMs: 6000, lowBalance: 10 }
-await page.goto(`${base}/__phase?phase=idle`, { waitUntil: 'domcontentloaded' })
-await page.goto(`${base}/?theme=light`, { waitUntil: 'networkidle2' })
-await waitReady()
+liveSettings = { visible: true, size: 184, right: 24, bottom: 200, bubble: true, bubbleMs: 1200, lowBalance: 10 }
+await reload('idle')
 
-// 点一下 → 开心
+// 首屏：气泡常驻，且里面就带余额
+let st = await readState()
+expect('气泡常驻显示', st.bubbleShown === true)
+expect('气泡里带余额', /¥|—|失败/.test(st.balance), st.balance)
+
+// 点一下 → 开心 + 台词
 await page.click('.lbd-actor')
 await delay(320)
-let st = await readState()
-expect('点一下变开心表情', st.actorClass.includes('is-happy'), st.actorClass)
-expect('点一下有回应台词', st.bubbleShown && st.bubbleText.length > 0, st.bubbleText)
-
-// 打开面板
-await page.click('.lbd-chip')
-await delay(260)
 st = await readState()
-expect('点余额胶囊打开面板', st.panelHidden === false)
+expect('点一下变开心表情', st.actorClass.includes('is-happy'), st.actorClass)
+expect('点一下有回应台词', st.speech.length > 0 && !st.bubbleCompact, st.speech)
+
+// 台词过一会儿收成只显示余额的小胶囊
+await delay(4600)
+st = await readState()
+expect('台词自动收成小胶囊', st.bubbleCompact === true)
+expect('收起后仍显示余额', /¥|—|失败/.test(st.balance), st.balance)
+
+// 点气泡 → 余额详情
+await page.click('.lbd-bubble')
+await delay(300)
+st = await readState()
+expect('点气泡打开余额详情', st.detailHidden === false)
+expect('详情里有余额数字', st.detailNum !== '—' || st.detailNum.length > 0, st.detailNum)
+
+// 详情里的刷新
+await page.click('.lbd-refresh')
+await delay(700)
+const refreshLabel = await page.$eval('.lbd-refresh', (el) => el.textContent)
+expect('详情里能刷新余额', refreshLabel === '刷新', refreshLabel)
+
+// Esc 关闭
+await page.keyboard.press('Escape')
+await delay(220)
+st = await readState()
+expect('Esc 关闭详情', st.detailHidden === true)
+
+// 右击角色 → 设置菜单
+await page.click('.lbd-actor', { button: 'right' })
+await delay(300)
+st = await readState()
+expect('右击角色弹出设置菜单', st.menuHidden === false)
 
 // 改大小
 const beforeSize = parseFloat(st.actorWidth)
 await page.click('[data-size="1"]')
 await delay(420)
 st = await readState()
-expect('面板 + 号放大角色', parseFloat(st.actorWidth) === beforeSize + 16, `${beforeSize} → ${st.actorWidth}`)
+expect('菜单 + 号放大角色', parseFloat(st.actorWidth) === beforeSize + 16, `${beforeSize} → ${st.actorWidth}`)
 expect('大小写回后端', liveSettings.size === beforeSize + 16, String(liveSettings.size))
 
-// 关气泡后不再冒泡
+// 阈值
+await page.click('[data-threshold="1"]')
+await delay(420)
+expect('低余额阈值写回后端', liveSettings.lowBalance === 15, String(liveSettings.lowBalance))
+
+// 关台词：只影响说话，余额照样在
 await page.click('[data-toggle="bubble"]')
 await delay(300)
 await page.click('.lbd-actor')
 await delay(360)
 st = await readState()
-expect('关掉气泡后不再说话', st.bubbleShown === false)
-expect('气泡开关写回后端', liveSettings.bubble === false, String(liveSettings.bubble))
+expect('关掉台词后不再说话', st.speech === '' && st.bubbleCompact === true, `speech="${st.speech}"`)
+expect('关掉台词后余额还看得见', /¥|—|失败/.test(st.balance), st.balance)
+expect('台词开关写回后端', liveSettings.bubble === false, String(liveSettings.bubble))
 
-// 恢复气泡
+// 恢复台词
+if (await page.$eval('.lbd-menu', (el) => el.hidden)) {
+  await page.click('.lbd-actor', { button: 'right' })
+  await delay(250)
+}
 await page.click('[data-toggle="bubble"]')
 await delay(300)
-expect('气泡可以再打开', liveSettings.bubble === true)
+expect('台词可以再打开', liveSettings.bubble === true)
 
 // 隐藏 / 恢复
-async function ensurePanel() {
-  const hidden = await page.$eval('.lbd-panel', (el) => el.hidden)
-  if (hidden) {
-    await page.click('.lbd-chip')
-    await delay(220)
-  }
+if (await page.$eval('.lbd-menu', (el) => el.hidden)) {
+  await page.click('.lbd-actor', { button: 'right' })
+  await delay(250)
 }
-await ensurePanel()
 await page.click('.lbd-hide')
 await delay(340)
 st = await readState()
@@ -358,14 +416,15 @@ expect('拖动改变位置', Math.abs(st.right - beforeDrag.right) > 60, `${befo
 expect('拖动后位置写回后端', Math.abs((liveSettings.right || 0) - st.right) < 6, `${liveSettings.right} vs ${st.right}`)
 expect('拖动不会误触发摸摸头', !st.actorClass.includes('is-happy'), st.actorClass)
 
-// 余额提醒
-await page.goto(`${base}/__phase?phase=error`, { waitUntil: 'domcontentloaded' })
-await page.goto(`${base}/?theme=light`, { waitUntil: 'networkidle2' })
-await waitReady()
+// 余额读取失败
+await reload('error')
+await delay(700)
 st = await readState()
-await delay(900)
+expect('余额读取失败在气泡里提示', /失败/.test(st.balance), st.balance)
+await page.click('.lbd-bubble')
+await delay(300)
 st = await readState()
-expect('余额读取失败会提示', st.chip.includes('失败') || st.bubbleText.includes('余额'), `${st.chip} / ${st.bubbleText}`)
+expect('余额失败时详情仍可打开', st.detailHidden === false, st.detailNum)
 
 const failed = results.filter((r) => !r.ok)
 console.log(failed.length === 0 ? '✅ 交互回归全部通过' : `❌ ${failed.length} 项交互回归失败`)
@@ -373,10 +432,10 @@ console.log(failed.length === 0 ? '✅ 交互回归全部通过' : `❌ ${failed
 await browser.close()
 server.close()
 
-// 合成验收大图：4 列
+// 合成验收大图：4 列 × 2 行
 const TILE_W = 300
 const TILE_H = 418
-const rows = [shotFiles, [darkIdle, darkLow, panelFile]]
+const rows = [shotFiles, [darkIdle, darkLow, detailFile, menuFile]]
 const tiles = []
 rows.forEach((row, r) => {
   row.forEach((file, c) => {

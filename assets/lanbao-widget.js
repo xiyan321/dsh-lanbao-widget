@@ -1,12 +1,12 @@
 /**
  * 蓝宝挂件（浏览器端）
  *
- * 只做三件事：
- *   1. 把蓝宝画在右下角，按情境换表情（待机 / 思考 / 忙碌 / 开心 / 疑惑）；
- *   2. 用气泡说对应的话（情境台词 + 余额提示 + 每轮花费）；
- *   3. 提供一块小面板：余额明细、刷新、大小、低余额阈值、气泡开关。
- *
- * 全部 DOM 自带、样式加前缀，不依赖宿主框架，也不碰页面已有节点。
+ * 三块界面：
+ *   1. 角色：按情境换表情（待机 / 思考 / 忙碌 / 开心 / 疑惑），左键摸摸头、拖动换位置；
+ *   2. 椭圆气泡：说一句话，并常驻显示余额；不说话时收成只显示余额的小胶囊；
+ *      点气泡 → 余额详情（余额、赠金、充值、阈值、上轮花费、刷新）；
+ *      右击角色 → 设置菜单（大小、低余额阈值、气泡台词、隐藏、状态 JSON）。
+ *   3. 全部 DOM 自带、样式加前缀，不依赖宿主框架，也不碰页面已有节点。
  */
 (function () {
   'use strict'
@@ -116,60 +116,88 @@
     return (symbol || '¥') + n.toFixed(digits)
   }
 
+  function clockOf(ts) {
+    try {
+      var d = new Date(Number(ts))
+      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
+    } catch (e) {
+      return ''
+    }
+  }
+
   // ── 状态 ──────────────────────────────────────────────
   var settings = Object.assign({}, DEFAULTS)
   var view = { phase: 'idle', reason: 'idle', detail: null }
   var balance = null
   var lastTurn = null
   var lastTurnAt = 0
-  // 初值是 null：首帧必须真的加载一次 idle.png，否则前面两个 <img> 一直是空的
+  // 初值是 null：首帧必须真的加载一次 idle.webp，否则前面两个 <img> 一直是空的
   var expression = null
   var failStreak = 0
   var firstRun = true
   var pollTimer = 0
   var idleChatTimer = 0
   var bubble = { priority: -1, until: 0 }
+  var condenseTimer = 0
   var dragging = null
   var lastDragEndAt = 0
   var lastLocalMoveAt = 0
-  var panelOpen = false
+  var openPopover = null // 'detail' | 'menu' | null
 
   // ── DOM 骨架 ──────────────────────────────────────────
   var root = document.createElement('div')
   root.className = 'lbd-root'
   root.innerHTML = [
-    '<div class="lbd-bubble" role="status" aria-live="polite" hidden>',
-    '  <span class="lbd-bubble-text"></span>',
-    '  <i class="lbd-dots"><b></b><b></b><b></b></i>',
+    // 椭圆气泡：说话文本 + 常驻余额，点它看详情
+    '<div class="lbd-bubble" role="button" tabindex="0" aria-label="查看余额详情">',
+    '  <div class="lbd-speech">',
+    '    <span class="lbd-speech-text"></span>',
+    '    <i class="lbd-dots"><b></b><b></b><b></b></i>',
+    '  </div>',
+    '  <div class="lbd-bubble-balance">',
+    '    <i class="lbd-dot"></i>',
+    '    <span class="lbd-balance-text">余额 —</span>',
+    '  </div>',
+    '  <i class="lbd-tail"></i>',
+    '  <i class="lbd-tail-dot"></i>',
     '</div>',
-    '<div class="lbd-actor" role="button" tabindex="0" aria-label="蓝宝，点一下摸摸头">',
+    '<div class="lbd-actor" role="button" tabindex="0" aria-label="蓝宝：左键摸摸头，右键打开菜单">',
     '  <img class="lbd-img is-front" alt="" draggable="false">',
     '  <img class="lbd-img is-back" alt="" draggable="false">',
     '</div>',
-    '<button class="lbd-chip" type="button" aria-label="查看余额详情">',
-    '  <i class="lbd-dot"></i>',
-    '  <span class="lbd-chip-text">余额 —</span>',
-    '</button>',
     '<button class="lbd-restore" type="button" title="叫出蓝宝" aria-label="叫出蓝宝">蓝</button>',
-    '<div class="lbd-panel" role="dialog" aria-label="蓝宝设置" hidden>',
-    '  <div class="lbd-panel-head">',
-    '    <strong>蓝宝</strong>',
-    '    <span class="lbd-panel-state"></span>',
-    '    <button class="lbd-close" type="button" aria-label="关闭">×</button>',
+
+    // 余额详情（点气泡）
+    '<div class="lbd-pop lbd-detail" role="dialog" aria-label="余额详情" hidden>',
+    '  <div class="lbd-pop-head">',
+    '    <strong>余额</strong>',
+    '    <span class="lbd-detail-state"></span>',
+    '    <button class="lbd-close" type="button" data-close aria-label="关闭">×</button>',
     '  </div>',
-    '  <div class="lbd-balance">',
-    '    <div class="lbd-balance-main">',
-    '      <span class="lbd-balance-num">—</span>',
-    '      <button class="lbd-refresh" type="button">刷新</button>',
-    '    </div>',
-    '    <div class="lbd-balance-sub"></div>',
-    '    <div class="lbd-turn-cost"></div>',
+    '  <div class="lbd-detail-main">',
+    '    <span class="lbd-detail-num">—</span>',
+    '    <button class="lbd-refresh" type="button">刷新</button>',
+    '  </div>',
+    '  <div class="lbd-detail-sub"></div>',
+    '  <div class="lbd-detail-turn"></div>',
+    '  <div class="lbd-detail-foot">',
+    '    <span class="lbd-detail-time"></span>',
+    '    <a class="lbd-link" href="/dsh-lanbao/state.json" target="_blank" rel="noreferrer">状态 JSON</a>',
+    '  </div>',
+    '</div>',
+
+    // 设置菜单（右击角色）
+    '<div class="lbd-pop lbd-menu" role="menu" aria-label="蓝宝设置" hidden>',
+    '  <div class="lbd-pop-head">',
+    '    <strong>蓝宝设置</strong>',
+    '    <span class="lbd-menu-state"></span>',
+    '    <button class="lbd-close" type="button" data-close aria-label="关闭">×</button>',
     '  </div>',
     '  <div class="lbd-row">',
     '    <label>大小</label>',
     '    <div class="lbd-stepper">',
     '      <button type="button" data-size="-1">−</button>',
-    '      <span class="lbd-size-val">168</span>',
+    '      <span class="lbd-size-val">184</span>',
     '      <button type="button" data-size="1">+</button>',
     '    </div>',
     '  </div>',
@@ -182,81 +210,92 @@
     '    </div>',
     '  </div>',
     '  <div class="lbd-row">',
-    '    <label>气泡</label>',
+    '    <label>气泡台词</label>',
     '    <button class="lbd-toggle" type="button" data-toggle="bubble">开</button>',
     '  </div>',
     '  <div class="lbd-row lbd-row-end">',
-    '    <a class="lbd-link" href="/dsh-lanbao/state.json" target="_blank" rel="noreferrer">状态 JSON</a>',
     '    <button class="lbd-hide" type="button">隐藏蓝宝</button>',
+    '    <span class="lbd-hint">右键角色可再打开</span>',
     '  </div>',
     '</div>'
   ].join('')
 
   var style = document.createElement('style')
   style.textContent = [
-    '.lbd-root{position:fixed;z-index:20400;right:24px;bottom:200px;display:flex;flex-direction:column;align-items:center;gap:6px;',
+    // —— 舞台 ——
+    '.lbd-root{position:fixed;z-index:20400;right:24px;bottom:200px;display:flex;flex-direction:column;align-items:flex-end;gap:10px;',
     '  font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;',
-    '  -webkit-user-select:none;user-select:none;pointer-events:none;transition:opacity .22s ease;}',
-    '.lbd-root.is-hidden .lbd-actor,.lbd-root.is-hidden .lbd-bubble,.lbd-root.is-hidden .lbd-chip,.lbd-root.is-hidden .lbd-panel{display:none}',
-    '.lbd-restore{display:none;pointer-events:auto;width:30px;height:30px;border-radius:50%;border:1px solid rgba(38,74,140,.2);',
-    '  background:rgba(255,255,255,.9);color:#2a5da8;font:inherit;font-size:12px;cursor:pointer;align-items:center;justify-content:center;',
-    '  box-shadow:0 4px 12px rgba(24,46,86,.14);opacity:.62;transition:opacity .18s ease,transform .18s ease}',
-    '.lbd-restore:hover{opacity:1;transform:translateY(-1px)}',
-    '.lbd-root.is-hidden .lbd-restore{display:flex}',
-    '.lbd-root.is-dark .lbd-restore{background:rgba(32,40,54,.92);color:#a8c8f0;border-color:rgba(120,160,225,.28)}',
-    '.lbd-actor{position:relative;width:168px;height:168px;pointer-events:auto;cursor:grab;touch-action:none;',
+    '  -webkit-user-select:none;user-select:none;pointer-events:none;}',
+    '.lbd-root.is-hidden .lbd-actor,.lbd-root.is-hidden .lbd-bubble,.lbd-root.is-hidden .lbd-pop{display:none}',
+
+    // —— 角色 ——
+    '.lbd-actor{position:relative;width:184px;height:184px;pointer-events:auto;cursor:grab;touch-action:none;',
     '  filter:drop-shadow(0 10px 18px rgba(28,52,92,.22));transition:width .18s ease,height .18s ease;',
     '  animation:lbd-float 4.2s ease-in-out infinite;transform-origin:50% 92%;}',
     '.lbd-actor:active{cursor:grabbing}',
     '.lbd-img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;opacity:0;',
     '  transition:opacity .24s ease,transform .3s ease;pointer-events:none;-webkit-user-drag:none;}',
     '.lbd-img.is-front{opacity:1}',
-    '.lbd-bubble{pointer-events:none;max-width:232px;min-width:64px;padding:8px 12px;border-radius:14px;',
-    '  background:rgba(255,255,255,.97);color:#1f2a3d;border:1px solid rgba(38,74,140,.14);',
-    '  box-shadow:0 8px 22px rgba(24,46,86,.16);position:relative;opacity:0;transform:translateY(6px) scale(.96);',
-    '  transition:opacity .18s ease,transform .18s ease;text-align:center;line-height:1.5;word-break:break-word;}',
+
+    // —— 椭圆气泡 ——
+    '.lbd-bubble{pointer-events:auto;cursor:pointer;position:relative;align-self:flex-end;',
+    '  max-width:min(266px,calc(100vw - 44px));box-sizing:border-box;padding:9px 17px;border-radius:999px;',
+    '  background:rgba(255,255,255,.975);color:#1f2a3d;border:1px solid rgba(38,74,140,.14);',
+    '  box-shadow:0 10px 26px rgba(24,46,86,.16);text-align:center;word-break:break-word;',
+    '  opacity:0;transform:translateY(8px) scale(.9);transform-origin:80% 100%;',
+    '  transition:opacity .2s ease,transform .24s cubic-bezier(.2,1.3,.4,1),padding .2s ease,background .2s ease;}',
     '.lbd-bubble.is-show{opacity:1;transform:translateY(0) scale(1)}',
-    '.lbd-bubble::after{content:"";position:absolute;left:50%;bottom:-6px;width:12px;height:12px;margin-left:-6px;',
-    '  background:inherit;border-right:1px solid rgba(38,74,140,.14);border-bottom:1px solid rgba(38,74,140,.14);',
-    '  transform:rotate(45deg);border-bottom-right-radius:3px;}',
-    '.lbd-bubble.is-warn{background:#fff8e6;border-color:rgba(196,138,20,.4);color:#6b4a00}',
-    '.lbd-bubble.is-error{background:#fff0f0;border-color:rgba(196,52,52,.35);color:#7a1f1f}',
+    '.lbd-bubble:hover{box-shadow:0 12px 30px rgba(24,46,86,.22)}',
+    '.lbd-bubble.is-warn{background:#fff8e6;border-color:rgba(196,138,20,.42);color:#6b4a00}',
+    '.lbd-bubble.is-error{background:#fff0f0;border-color:rgba(196,52,52,.36);color:#7a1f1f}',
     '.lbd-bubble.is-happy{background:#eef8ff;border-color:rgba(38,96,180,.24);color:#123a6b}',
-    '.lbd-dots{display:none;margin-left:4px;gap:3px}',
+    // 不说话时收成小胶囊，只留余额
+    '.lbd-bubble.is-compact{align-self:flex-end;padding:6px 13px}',
+    '.lbd-bubble.is-compact .lbd-speech{display:none}',
+    '.lbd-bubble.is-compact .lbd-bubble-balance{border-top:0;margin-top:0;padding-top:0}',
+    '.lbd-speech{line-height:1.5;max-width:100%}',
+    '.lbd-dots{display:none;margin-left:4px;gap:3px;vertical-align:middle}',
     '.lbd-bubble.is-thinking .lbd-dots{display:inline-flex}',
     '.lbd-dots b{width:3px;height:3px;border-radius:50%;background:currentColor;opacity:.45;animation:lbd-blink 1.1s infinite}',
     '.lbd-dots b:nth-child(2){animation-delay:.18s}',
     '.lbd-dots b:nth-child(3){animation-delay:.36s}',
-    '.lbd-chip{pointer-events:auto;display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(38,74,140,.16);',
-    '  background:rgba(255,255,255,.94);color:#22314a;border-radius:999px;padding:4px 11px;font:inherit;font-size:12px;',
-    '  cursor:pointer;box-shadow:0 4px 12px rgba(24,46,86,.12);transition:transform .15s ease,box-shadow .15s ease,background .15s;}',
-    '.lbd-chip:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(24,46,86,.18)}',
-    '.lbd-dot{width:7px;height:7px;border-radius:50%;background:#3d7bd6;box-shadow:0 0 0 3px rgba(61,123,214,.16)}',
-    '.lbd-chip.is-low .lbd-dot{background:#d99512;box-shadow:0 0 0 3px rgba(217,149,18,.18)}',
-    '.lbd-chip.is-empty .lbd-dot,.lbd-chip.is-error .lbd-dot{background:#d24b4b;box-shadow:0 0 0 3px rgba(210,75,75,.18)}',
-    '.lbd-chip.is-low{border-color:rgba(196,138,20,.4);background:rgba(255,249,232,.96)}',
-    '.lbd-chip.is-empty,.lbd-chip.is-error{border-color:rgba(196,52,52,.35);background:rgba(255,241,241,.96);color:#7a1f1f}',
-    '.lbd-panel{pointer-events:auto;position:fixed;right:0;top:0;width:264px;box-sizing:border-box;overflow:auto;',
-    '  overscroll-behavior:contain;',
-    '  background:rgba(255,255,255,.985);border:1px solid rgba(38,74,140,.16);border-radius:16px;padding:12px 14px 10px;',
+    '.lbd-bubble-balance{display:flex;align-items:center;justify-content:center;gap:5px;font-size:11.5px;color:#4a5b76;',
+    '  margin-top:6px;padding-top:6px;border-top:1px dashed rgba(38,74,140,.18);white-space:nowrap}',
+    '.lbd-dot{width:7px;height:7px;border-radius:50%;background:#3d7bd6;box-shadow:0 0 0 3px rgba(61,123,214,.16);flex:0 0 auto}',
+    '.lbd-bubble.is-low .lbd-dot{background:#d99512;box-shadow:0 0 0 3px rgba(217,149,18,.18)}',
+    '.lbd-bubble.is-low .lbd-bubble-balance{color:#8a5f06}',
+    '.lbd-bubble.is-empty .lbd-dot,.lbd-bubble.is-error .lbd-dot{background:#d24b4b;box-shadow:0 0 0 3px rgba(210,75,75,.18)}',
+    '.lbd-bubble.is-empty .lbd-bubble-balance,.lbd-bubble.is-error .lbd-bubble-balance{color:#a03636}',
+    // 气泡尾巴：一颗大点 + 一颗小点，指向角色；横向位置由 JS 按"角色头心"算
+    '.lbd-tail{position:absolute;left:var(--lbd-tail-x,22px);bottom:-9px;width:13px;height:13px;border-radius:50%;background:inherit;',
+    '  border:1px solid rgba(38,74,140,.14);transition:background .2s ease}',
+    '.lbd-tail-dot{position:absolute;left:calc(var(--lbd-tail-x,22px) - 11px);bottom:-19px;width:5px;height:5px;border-radius:50%;',
+    '  background:inherit;border:1px solid rgba(38,74,140,.14);transition:background .2s ease}',
+
+    // —— 弹层（详情 / 菜单共用骨架）——
+    '.lbd-pop{pointer-events:auto;position:fixed;top:0;right:0;box-sizing:border-box;overflow:auto;',
+    '  overscroll-behavior:contain;width:264px;',
+    '  background:rgba(255,255,255,.985);border:1px solid rgba(38,74,140,.16);border-radius:16px;padding:12px 14px 11px;',
     '  box-shadow:0 18px 44px rgba(20,40,78,.22);color:#1f2a3d;display:flex;flex-direction:column;gap:9px;}',
-    '.lbd-panel[hidden]{display:none}',
-    '.lbd-panel-head{display:flex;align-items:center;gap:8px}',
-    '.lbd-panel-head strong{font-size:14px}',
-    '.lbd-panel-state{font-size:11px;color:#5b6d88;background:rgba(61,123,214,.1);border-radius:999px;padding:2px 8px}',
+    '.lbd-pop[hidden]{display:none}',
+    '.lbd-pop-head{display:flex;align-items:center;gap:8px}',
+    '.lbd-pop-head strong{font-size:14px}',
+    '.lbd-detail-state,.lbd-menu-state{font-size:11px;color:#5b6d88;background:rgba(61,123,214,.1);border-radius:999px;padding:2px 8px}',
     '.lbd-close{margin-left:auto;border:0;background:transparent;color:#6b7c95;font-size:17px;line-height:1;cursor:pointer;padding:2px 4px;border-radius:6px}',
     '.lbd-close:hover{background:rgba(38,74,140,.08)}',
-    '.lbd-balance{background:rgba(61,123,214,.06);border-radius:12px;padding:9px 11px}',
-    '.lbd-balance-main{display:flex;align-items:baseline;gap:8px}',
-    '.lbd-balance-num{font-size:20px;font-weight:600;letter-spacing:.2px}',
-    '.lbd-balance.is-low .lbd-balance-num{color:#a8700a}',
-    '.lbd-balance.is-empty .lbd-balance-num,.lbd-balance.is-error .lbd-balance-num{color:#b33636}',
+    '.lbd-detail-main{display:flex;align-items:baseline;gap:8px;background:rgba(61,123,214,.06);border-radius:12px;padding:10px 12px}',
+    '.lbd-detail-num{font-size:22px;font-weight:600;letter-spacing:.2px}',
+    '.lbd-detail.is-low .lbd-detail-num{color:#a8700a}',
+    '.lbd-detail.is-empty .lbd-detail-num,.lbd-detail.is-error .lbd-detail-num{color:#b33636}',
     '.lbd-refresh{margin-left:auto;border:1px solid rgba(38,74,140,.18);background:#fff;border-radius:8px;padding:3px 9px;',
     '  font:inherit;font-size:12px;color:#2a3d5c;cursor:pointer}',
     '.lbd-refresh:hover{background:rgba(61,123,214,.08)}',
     '.lbd-refresh[disabled]{opacity:.55;cursor:default}',
-    '.lbd-balance-sub{font-size:11.5px;color:#5b6d88;margin-top:3px}',
-    '.lbd-turn-cost{font-size:11.5px;color:#5b6d88;margin-top:2px}',
+    '.lbd-detail-sub,.lbd-detail-turn,.lbd-detail-time{font-size:11.5px;color:#5b6d88}',
+    '.lbd-detail-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;',
+    '  border-top:1px solid rgba(38,74,140,.1);padding-top:8px;margin-top:1px}',
+    '.lbd-link{color:#5b6d88;font-size:11.5px;text-decoration:none}',
+    '.lbd-link:hover{text-decoration:underline}',
     '.lbd-row{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px}',
     '.lbd-row label{color:#48586f}',
     '.lbd-stepper{display:inline-flex;align-items:center;gap:6px}',
@@ -267,11 +306,19 @@
     '.lbd-toggle{border:1px solid rgba(38,74,140,.18);background:#fff;border-radius:8px;padding:3px 12px;font:inherit;',
     '  font-size:12px;color:#2a3d5c;cursor:pointer;min-width:52px}',
     '.lbd-toggle.is-on{background:rgba(61,123,214,.12);border-color:rgba(61,123,214,.4);color:#1d4e96}',
-    '.lbd-row-end{border-top:1px solid rgba(38,74,140,.1);padding-top:8px;margin-top:1px}',
-    '.lbd-link{color:#5b6d88;font-size:11.5px;text-decoration:none}',
-    '.lbd-link:hover{text-decoration:underline}',
+    '.lbd-row-end{border-top:1px solid rgba(38,74,140,.1);padding-top:9px;margin-top:1px}',
     '.lbd-hide{border:0;background:transparent;color:#a03636;font:inherit;font-size:12px;cursor:pointer;padding:2px 4px;border-radius:6px}',
     '.lbd-hide:hover{background:rgba(196,52,52,.09)}',
+    '.lbd-hint{font-size:11px;color:#8a99b0}',
+
+    // —— 隐藏后的召回按钮 ——
+    '.lbd-restore{display:none;pointer-events:auto;width:30px;height:30px;border-radius:50%;border:1px solid rgba(38,74,140,.2);',
+    '  background:rgba(255,255,255,.9);color:#2a5da8;font:inherit;font-size:12px;cursor:pointer;align-items:center;justify-content:center;',
+    '  box-shadow:0 4px 12px rgba(24,46,86,.14);opacity:.62;transition:opacity .18s ease,transform .18s ease}',
+    '.lbd-restore:hover{opacity:1;transform:translateY(-1px)}',
+    '.lbd-root.is-hidden .lbd-restore{display:flex}',
+
+    // —— 动画 ——
     '@keyframes lbd-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}',
     '@keyframes lbd-blink{0%,100%{opacity:.25}50%{opacity:1}}',
     '@keyframes lbd-bounce{0%{transform:translateY(0) scale(1)}30%{transform:translateY(-14px) scale(1.04)}60%{transform:translateY(0) scale(.98)}80%{transform:translateY(-5px) scale(1.01)}100%{transform:translateY(0) scale(1)}}',
@@ -283,27 +330,30 @@
     '.lbd-actor.is-confused{animation:lbd-tilt 2.2s ease-in-out infinite}',
     '.lbd-root.is-reduced .lbd-actor,.lbd-root.is-reduced .lbd-dots b{animation:none!important}',
     '.lbd-root.is-dragging .lbd-actor{animation:none!important}',
-    // 深色皮：不跟系统 prefers-color-scheme 走，而是采样页面底色后挂 .is-dark，
-    // 因为 DSH 的主题是应用内切换的，不一定和系统一致。
-    '.lbd-root.is-dark .lbd-bubble{background:rgba(32,40,54,.97);color:#e7eefa;border-color:rgba(120,160,225,.24)}',
-    '.lbd-root.is-dark .lbd-bubble::after{border-right-color:rgba(120,160,225,.24);border-bottom-color:rgba(120,160,225,.24)}',
-    '.lbd-root.is-dark .lbd-bubble.is-warn{background:#3a2f14;color:#f0d79a;border-color:rgba(214,164,50,.4)}',
+
+    // —— 深色皮：采样页面底色后挂 .is-dark ——
+    '.lbd-root.is-dark .lbd-bubble{background:rgba(32,40,54,.97);color:#e7eefa;border-color:rgba(120,160,225,.26)}',
+    '.lbd-root.is-dark .lbd-tail,.lbd-root.is-dark .lbd-tail-dot{border-color:rgba(120,160,225,.26)}',
+    '.lbd-root.is-dark .lbd-bubble.is-warn{background:#3a2f14;color:#f0d79a;border-color:rgba(214,164,50,.42)}',
     '.lbd-root.is-dark .lbd-bubble.is-error{background:#3a1d1d;color:#f3c3c3;border-color:rgba(220,90,90,.4)}',
-    '.lbd-root.is-dark .lbd-bubble.is-happy{background:#132a46;color:#cfe3ff;border-color:rgba(96,150,225,.3)}',
-    '.lbd-root.is-dark .lbd-chip{background:rgba(32,40,54,.94);color:#e2eaf7;border-color:rgba(120,160,225,.24)}',
-    '.lbd-root.is-dark .lbd-chip.is-low{background:rgba(58,47,20,.95);color:#f2dca4;border-color:rgba(214,164,50,.4)}',
-    '.lbd-root.is-dark .lbd-chip.is-empty,.lbd-root.is-dark .lbd-chip.is-error{background:rgba(58,29,29,.95);color:#f5cccc;border-color:rgba(220,90,90,.4)}',
-    '.lbd-root.is-dark .lbd-panel{background:rgba(26,33,45,.985);color:#e6edf8;border-color:rgba(120,160,225,.22)}',
-    '.lbd-root.is-dark .lbd-balance{background:rgba(96,150,225,.12)}',
-    '.lbd-root.is-dark .lbd-balance.is-low .lbd-balance-num{color:#e8b96a}',
-    '.lbd-root.is-dark .lbd-balance.is-empty .lbd-balance-num,.lbd-root.is-dark .lbd-balance.is-error .lbd-balance-num{color:#f0a3a3}',
-    '.lbd-root.is-dark .lbd-panel-state{color:#adc2df;background:rgba(96,150,225,.18)}',
-    '.lbd-root.is-dark .lbd-row label,.lbd-root.is-dark .lbd-balance-sub,.lbd-root.is-dark .lbd-turn-cost,.lbd-root.is-dark .lbd-link{color:#a8bad4}',
-    '.lbd-root.is-dark .lbd-stepper button,.lbd-root.is-dark .lbd-toggle,.lbd-root.is-dark .lbd-refresh{background:rgba(255,255,255,.06);color:#d7e3f5;border-color:rgba(120,160,225,.26)}',
+    '.lbd-root.is-dark .lbd-bubble.is-happy{background:#132a46;color:#cfe3ff;border-color:rgba(96,150,225,.32)}',
+    '.lbd-root.is-dark .lbd-bubble-balance{color:#9fb4d2;border-top-color:rgba(120,160,225,.2)}',
+    '.lbd-root.is-dark .lbd-bubble.is-low .lbd-bubble-balance{color:#e8b96a}',
+    '.lbd-root.is-dark .lbd-bubble.is-empty .lbd-bubble-balance,.lbd-root.is-dark .lbd-bubble.is-error .lbd-bubble-balance{color:#f0a3a3}',
+    '.lbd-root.is-dark .lbd-pop{background:rgba(26,33,45,.985);color:#e6edf8;border-color:rgba(120,160,225,.22)}',
+    '.lbd-root.is-dark .lbd-detail-main{background:rgba(96,150,225,.12)}',
+    '.lbd-root.is-dark .lbd-detail.is-low .lbd-detail-num{color:#e8b96a}',
+    '.lbd-root.is-dark .lbd-detail.is-empty .lbd-detail-num,.lbd-root.is-dark .lbd-detail.is-error .lbd-detail-num{color:#f0a3a3}',
+    '.lbd-root.is-dark .lbd-detail-state,.lbd-root.is-dark .lbd-menu-state{color:#adc2df;background:rgba(96,150,225,.18)}',
+    '.lbd-root.is-dark .lbd-row label,.lbd-root.is-dark .lbd-detail-sub,.lbd-root.is-dark .lbd-detail-turn,',
+    '.lbd-root.is-dark .lbd-detail-time,.lbd-root.is-dark .lbd-link,.lbd-root.is-dark .lbd-hint{color:#a8bad4}',
+    '.lbd-root.is-dark .lbd-stepper button,.lbd-root.is-dark .lbd-toggle,.lbd-root.is-dark .lbd-refresh{',
+    '  background:rgba(255,255,255,.06);color:#d7e3f5;border-color:rgba(120,160,225,.26)}',
     '.lbd-root.is-dark .lbd-toggle.is-on{background:rgba(96,150,225,.24);color:#cfe2ff}',
-    '.lbd-root.is-dark .lbd-row-end{border-top-color:rgba(120,160,225,.14)}',
+    '.lbd-root.is-dark .lbd-row-end,.lbd-root.is-dark .lbd-detail-foot{border-top-color:rgba(120,160,225,.14)}',
     '.lbd-root.is-dark .lbd-close{color:#93a7c4}',
-    '.lbd-root.is-dark .lbd-hide{color:#ef9c9c}'
+    '.lbd-root.is-dark .lbd-hide{color:#ef9c9c}',
+    '.lbd-root.is-dark .lbd-restore{background:rgba(32,40,54,.92);color:#a8c8f0;border-color:rgba(120,160,225,.28)}'
   ].join('\n')
   ;(document.head || document.documentElement).appendChild(style)
   ;(document.body || document.documentElement).appendChild(root)
@@ -312,16 +362,21 @@
   var front = root.querySelector('.lbd-img.is-front')
   var back = root.querySelector('.lbd-img.is-back')
   var bubbleEl = root.querySelector('.lbd-bubble')
-  var bubbleText = root.querySelector('.lbd-bubble-text')
-  var chip = root.querySelector('.lbd-chip')
-  var chipText = root.querySelector('.lbd-chip-text')
-  var panel = root.querySelector('.lbd-panel')
-  var panelState = root.querySelector('.lbd-panel-state')
-  var balanceBox = root.querySelector('.lbd-balance')
-  var balanceNum = root.querySelector('.lbd-balance-num')
-  var balanceSub = root.querySelector('.lbd-balance-sub')
-  var turnCostEl = root.querySelector('.lbd-turn-cost')
+  var speechEl = root.querySelector('.lbd-speech')
+  var speechText = root.querySelector('.lbd-speech-text')
+  var balanceText = root.querySelector('.lbd-balance-text')
+  var restoreBtn = root.querySelector('.lbd-restore')
+
+  var detail = root.querySelector('.lbd-detail')
+  var detailState = root.querySelector('.lbd-detail-state')
+  var detailNum = root.querySelector('.lbd-detail-num')
+  var detailSub = root.querySelector('.lbd-detail-sub')
+  var detailTurn = root.querySelector('.lbd-detail-turn')
+  var detailTime = root.querySelector('.lbd-detail-time')
   var refreshBtn = root.querySelector('.lbd-refresh')
+
+  var menu = root.querySelector('.lbd-menu')
+  var menuState = root.querySelector('.lbd-menu-state')
   var sizeVal = root.querySelector('.lbd-size-val')
   var thresholdVal = root.querySelector('.lbd-threshold-val')
   var toggleBtn = root.querySelector('[data-toggle="bubble"]')
@@ -347,16 +402,33 @@
       if (!el) continue
       var rgb = parseRgb(window.getComputedStyle(el).backgroundColor)
       if (!rgb || rgb.a < 0.35) continue
-      var luminance = 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b
-      return luminance < 120
+      return 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b < 120
     }
     return mediaDark
   }
 
   var themed = null
+  var themePending = null
+  /**
+   * DSH 启动瞬间 body 底色会短暂变深（加载态），直接跟着切会出现一次假深色闪烁。
+   * 所以：首次直接定，之后要连续两次采样结果一致才真正切换。
+   */
   function applyTheme() {
     var dark = detectDark()
-    if (dark === themed) return
+    if (themed === null) {
+      themed = dark
+      themePending = dark
+      root.classList.toggle('is-dark', dark)
+      return
+    }
+    if (dark === themed) {
+      themePending = dark
+      return
+    }
+    if (themePending !== dark) {
+      themePending = dark
+      return
+    }
     themed = dark
     root.classList.toggle('is-dark', dark)
   }
@@ -404,31 +476,77 @@
   }
 
   // ── 气泡 ──────────────────────────────────────────────
+  /**
+   * 气泡有两种形态：
+   *  - 展开：一句台词 + 余额；
+   *  - 收起（is-compact）：只留余额小胶囊。
+   * 关掉「气泡台词」后只走收起形态，余额照常可见。
+   */
+  function condense() {
+    window.clearTimeout(condenseTimer)
+    bubbleEl.classList.add('is-compact')
+    bubbleEl.classList.remove('is-thinking')
+    // 收起时把台词清掉：否则关掉台词开关后旧文字还留在 DOM 里
+    speechText.textContent = ''
+    bubble.priority = -1
+    if (!bubbleEl.classList.contains('is-show')) bubbleEl.classList.add('is-show')
+    schedulePositionTail()
+  }
+
   function showBubble(text, options) {
-    if (!settings.bubble || !text) return
     var opts = options || {}
+    if (!settings.bubble || !text) {
+      // 台词关了也要让余额露出来
+      condense()
+      return
+    }
     var priority = opts.priority === undefined ? 1 : opts.priority
     var now = Date.now()
     if (priority < bubble.priority && now < bubble.until) return
     bubble.priority = priority
     bubble.until = now + (opts.ttl || settings.bubbleMs)
-    bubbleText.textContent = text
-    bubbleEl.hidden = false
+    bubbleTextSet(text)
+    bubbleEl.classList.remove('is-compact')
+    bubbleEl.classList.add('is-show')
     bubbleEl.classList.toggle('is-warn', opts.tone === 'warn')
     bubbleEl.classList.toggle('is-error', opts.tone === 'error')
     bubbleEl.classList.toggle('is-happy', opts.tone === 'happy')
     bubbleEl.classList.toggle('is-thinking', !!opts.thinking)
-    bubbleEl.classList.add('is-show')
-    window.clearTimeout(showBubble.timer)
-    showBubble.timer = window.setTimeout(function () {
-      bubbleEl.classList.remove('is-show')
-      bubble.priority = -1
-    }, opts.sticky ? Math.max(1200, settings.bubbleMs) : bubble.until - now)
+    window.clearTimeout(condenseTimer)
+    condenseTimer = window.setTimeout(condense, opts.ttl || settings.bubbleMs)
+    schedulePositionTail()
   }
 
-  function hideBubble() {
-    bubbleEl.classList.remove('is-show')
-    bubble.priority = -1
+  function bubbleTextSet(text) {
+    speechText.textContent = text
+  }
+
+  /**
+   * 尾巴要指向角色的头，而不是气泡自己的某个角。
+   * 气泡宽度会随文字变化（宽话时比角色还宽），所以每次布局后按实际坐标算一次。
+   */
+  function positionTail() {
+    if (!bubbleEl.offsetWidth) return
+    var bubbleRect = bubbleEl.getBoundingClientRect()
+    var actorRect = actor.getBoundingClientRect()
+    // 稍微偏离头心一点，落在头顶左前方，看起来更像"从嘴边冒出来"
+    var target = actorRect.left + actorRect.width * 0.42 - bubbleRect.left
+    var min = 16
+    var max = Math.max(min, bubbleRect.width - 26)
+    bubbleEl.style.setProperty('--lbd-tail-x', Math.round(Math.max(min, Math.min(max, target))) + 'px')
+  }
+
+  var tailFrame = 0
+  function schedulePositionTail() {
+    if (tailFrame) return
+    tailFrame = window.requestAnimationFrame(function () {
+      tailFrame = 0
+      positionTail()
+    })
+  }
+
+  function clearBubbleTone() {
+    bubbleEl.classList.remove('is-warn', 'is-error', 'is-happy')
   }
 
   // ── 渲染 ──────────────────────────────────────────────
@@ -457,6 +575,7 @@
     toggleBtn.textContent = settings.bubble ? '开' : '关'
     toggleBtn.classList.toggle('is-on', !!settings.bubble)
     positionFromSettings()
+    schedulePositionTail()
   }
 
   function positionFromSettings() {
@@ -469,48 +588,50 @@
     root.style.bottom = bottom + 'px'
   }
 
+  function balanceLevel() {
+    return (balance && balance.level) || 'unknown'
+  }
+
   function renderBalance() {
-    var level = (balance && balance.level) || 'unknown'
+    var level = balanceLevel()
     var symbol = (balance && balance.symbol) || '¥'
     var total = balance && balance.total
+
     var text = level === 'unknown'
       ? '余额 —'
       : level === 'error'
         ? '余额读取失败'
         : '余额 ' + money(total, symbol)
 
-    chipText.textContent = text
-    chip.classList.remove('is-low', 'is-empty', 'is-error')
-    if (level === 'low') chip.classList.add('is-low')
-    if (level === 'empty') chip.classList.add('is-empty')
-    if (level === 'error') chip.classList.add('is-error')
+    balanceText.textContent = text
+    bubbleEl.classList.remove('is-low', 'is-empty', 'is-error')
+    detail.classList.remove('is-low', 'is-empty', 'is-error')
+    if (level === 'low') { bubbleEl.classList.add('is-low'); detail.classList.add('is-low') }
+    if (level === 'empty') { bubbleEl.classList.add('is-empty'); detail.classList.add('is-empty') }
+    if (level === 'error') { bubbleEl.classList.add('is-error'); detail.classList.add('is-error') }
 
-    balanceBox.classList.remove('is-low', 'is-empty', 'is-error')
-    if (level === 'low') balanceBox.classList.add('is-low')
-    if (level === 'empty') balanceBox.classList.add('is-empty')
-    if (level === 'error') balanceBox.classList.add('is-error')
-
-    balanceNum.textContent = level === 'error' ? '—' : level === 'unknown' ? '—' : money(total, symbol)
+    // 详情面板
+    detailNum.textContent = level === 'error' || level === 'unknown' ? '—' : money(total, symbol)
+    detailState.textContent = phaseText()
 
     var sub = []
     if (level === 'error' && balance && balance.error) sub.push(balance.error)
-    else if (level === 'unknown') sub.push('正在获取…')
+    else if (level === 'unknown') sub.push('还没有余额数据')
     else {
       if (balance.granted !== null && balance.granted !== undefined) sub.push('赠金 ' + money(balance.granted, symbol))
       if (balance.toppedUp !== null && balance.toppedUp !== undefined) sub.push('充值 ' + money(balance.toppedUp, symbol))
-      if (balance.stale) sub.push('· 缓存')
       sub.push('阈值 ' + money(settings.lowBalance, symbol))
+      if (balance.stale) sub.push('缓存')
     }
-    balanceSub.textContent = sub.join(' · ')
+    detailSub.textContent = sub.join(' · ')
 
     if (lastTurn && lastTurn.cost !== null && lastTurn.cost !== undefined) {
-      var when = new Date(lastTurn.at)
-      var hh = String(when.getHours()).padStart(2, '0')
-      var mm = String(when.getMinutes()).padStart(2, '0')
-      turnCostEl.textContent = '上一轮花费 ' + money(lastTurn.cost, lastTurn.symbol || symbol) + ' · ' + hh + ':' + mm
+      detailTurn.textContent = '上轮花费 ' + money(lastTurn.cost, lastTurn.symbol || symbol) + ' · ' + clockOf(lastTurn.at)
     } else {
-      turnCostEl.textContent = ''
+      detailTurn.textContent = '还没有本机花费记录'
     }
+    detailTime.textContent = balance && balance.at ? '更新于 ' + clockOf(balance.at) : '尚未获取'
+    schedulePositionTail()
   }
 
   function phaseText() {
@@ -537,10 +658,10 @@
     balance = next.balance || null
     lastTurn = next.lastTurn || null
     setPhase(view.phase)
-    panelState.textContent = phaseText()
+    menuState.textContent = phaseText()
 
-    var changedReason = previousReason !== view.reason || previousPhase !== view.phase
-    if (!changedReason && !options.force) return
+    var changed = previousReason !== view.reason || previousPhase !== view.phase
+    if (!changed && !options.force) return
 
     // 每轮花费优先播报（余额提示的核心：一轮花了多少、剩多少）
     if (lastTurn && lastTurn.at && lastTurn.at !== lastTurnAt) {
@@ -548,7 +669,7 @@
       showBubble('这轮花了 ' + money(lastTurn.cost, lastTurn.symbol) + '，余额 ' + money(lastTurn.after, lastTurn.symbol), {
         priority: 3,
         ttl: Math.max(settings.bubbleMs, 6500),
-        tone: balanceTone(balance && balance.level)
+        tone: balanceTone(balanceLevel())
       })
       return
     }
@@ -592,6 +713,51 @@
     }
   }
 
+  // ── 弹层定位（详情 / 菜单共用）─────────────────────────
+  /**
+   * 以某个锚点矩形为基准摆放弹层：优先开在锚点上方，放不下翻到下方，
+   * 水平方向夹在视口内。anchor 可以是元素，也可以是 { x, y } 光标点。
+   */
+  function placePopover(el, anchor) {
+    var rect = anchor && anchor.getBoundingClientRect
+      ? anchor.getBoundingClientRect()
+      : { left: (anchor && anchor.x) || 0, top: (anchor && anchor.y) || 0, right: (anchor && anchor.x) || 0, bottom: (anchor && anchor.y) || 0, width: 0, height: 0 }
+
+    var width = Math.max(236, Math.min(272, window.innerWidth - 24))
+    el.style.width = width + 'px'
+    el.style.maxHeight = Math.max(200, window.innerHeight - 16) + 'px'
+
+    var left = Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8)
+    el.style.left = left + 'px'
+    el.style.right = 'auto'
+
+    var height = el.offsetHeight
+    var top = rect.top - height - 10
+    if (top < 8) top = rect.bottom + 10
+    top = Math.max(8, Math.min(top, window.innerHeight - height - 8))
+    el.style.top = top + 'px'
+  }
+
+  function closePopovers() {
+    openPopover = null
+    detail.hidden = true
+    menu.hidden = true
+  }
+
+  function showPopover(which, anchor) {
+    closePopovers()
+    openPopover = which
+    var el = which === 'detail' ? detail : menu
+    el.hidden = false
+    if (which === 'detail') {
+      renderBalance()
+      detailState.textContent = phaseText()
+    } else {
+      menuState.textContent = phaseText()
+    }
+    placePopover(el, anchor || bubbleEl)
+  }
+
   // ── 轮询 ──────────────────────────────────────────────
   function scheduleIdleChat() {
     window.clearTimeout(idleChatTimer)
@@ -617,6 +783,7 @@
         applyTheme()
         reactTo(data, { idleChat: false })
         renderBalance()
+        if (openPopover === 'detail') renderBalance()
         if (firstRun) {
           firstRun = false
           // 开场白只在第一次见面说，之后刷新页面直接进入情境台词
@@ -664,7 +831,7 @@
     }, 260)
   }
 
-  // ── 交互 ──────────────────────────────────────────────
+  // ── 交互：角色 ────────────────────────────────────────
   function pet() {
     setPhase('happy')
     actor.classList.add('is-happy')
@@ -685,7 +852,33 @@
       event.preventDefault()
       pet()
     }
+    // 键盘唤起菜单（等价于右键）
+    if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+      event.preventDefault()
+      showPopover('menu', actor)
+    }
   })
+
+  // 右键 → 设置菜单
+  actor.addEventListener('contextmenu', function (event) {
+    event.preventDefault()
+    showPopover('menu', { x: event.clientX, y: event.clientY })
+  })
+
+  // 触屏长按也能出菜单（移动端没有右键）
+  var longPressTimer = 0
+  var longPressFired = false
+  actor.addEventListener('pointerdown', function (event) {
+    if (event.pointerType === 'mouse') return
+    longPressFired = false
+    longPressTimer = window.setTimeout(function () {
+      longPressFired = true
+      var rect = actor.getBoundingClientRect()
+      showPopover('menu', { x: rect.left + rect.width / 2, y: rect.top })
+    }, 560)
+  })
+  actor.addEventListener('pointerup', function () { window.clearTimeout(longPressTimer) })
+  actor.addEventListener('pointercancel', function () { window.clearTimeout(longPressTimer) })
 
   // 拖拽：用 pointer 事件，落位写回设置
   actor.addEventListener('pointerdown', function (event) {
@@ -707,11 +900,8 @@
     var dx = event.clientX - dragging.startX
     var dy = event.clientY - dragging.startY
     if (!dragging.moved && Math.abs(dx) + Math.abs(dy) < 5) return
-    // 真的开始拖了才收面板：单纯点一下当抚摸，不该把面板关掉
-    if (!dragging.moved && panelOpen) {
-      panelOpen = false
-      panel.hidden = true
-    }
+    // 真的开始拖了才收弹层：单纯点一下当抚摸，不该把菜单关掉
+    if (!dragging.moved) closePopovers()
     dragging.moved = true
     var right = Math.max(0, Math.min(window.innerWidth - 40, dragging.originRight - dx))
     var bottom = Math.max(0, Math.min(window.innerHeight - 40, dragging.originBottom - dy))
@@ -726,51 +916,40 @@
     root.classList.remove('is-dragging')
     if (!moved) return
     lastDragEndAt = Date.now()
-    var right = Math.round(parseFloat(root.style.right) || 0)
-    var bottom = Math.round(parseFloat(root.style.bottom) || 0)
+    // 兜底：万一 style 还没写上就结束拖拽，读到的会是 NaN，别把角色丢到 0/0
+    var right = parseFloat(root.style.right)
+    var bottom = parseFloat(root.style.bottom)
+    if (!isFinite(right)) right = Number(settings.right) || 0
+    if (!isFinite(bottom)) bottom = Number(settings.bottom) || 0
+    right = Math.round(right)
+    bottom = Math.round(bottom)
     try { window.localStorage.setItem(POS_KEY, JSON.stringify({ right: right, bottom: bottom })) } catch (e) {}
     persistSettings({ right: right, bottom: bottom })
   }
-  actor.addEventListener('pointerup', endDrag)
-  actor.addEventListener('pointercancel', endDrag)
+  actor.addEventListener('pointerup', function () {
+    window.clearTimeout(longPressTimer)
+    endDrag()
+  })
+  actor.addEventListener('pointercancel', function () { window.clearTimeout(longPressTimer); endDrag() })
   actor.addEventListener('pointerleave', function () { if (dragging && dragging.moved) endDrag() })
 
-  chip.addEventListener('click', function (event) {
+  // ── 交互：气泡 ────────────────────────────────────────
+  bubbleEl.addEventListener('click', function (event) {
     event.stopPropagation()
-    togglePanel()
+    if (openPopover === 'detail') {
+      closePopovers()
+      return
+    }
+    showPopover('detail', bubbleEl)
+  })
+  bubbleEl.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      showPopover('detail', bubbleEl)
+    }
   })
 
-  /**
-   * 面板以角色为锚：右对齐角色的右边，垂直方向夹在视口内。
-   * 默认开在角色上方，上方放不下就翻到下方，还放不下就限高滚动。
-   */
-  function placePanel() {
-    var actorRect = actor.getBoundingClientRect()
-    var width = Math.max(236, Math.min(300, window.innerWidth - 24))
-    panel.style.width = width + 'px'
-    panel.style.right = Math.max(8, Math.min(window.innerWidth - width - 8, window.innerWidth - actorRect.right)) + 'px'
-    panel.style.bottom = 'auto'
-    panel.style.maxHeight = Math.max(200, window.innerHeight - 16) + 'px'
-
-    var height = panel.offsetHeight
-    var top = actorRect.top - height - 10
-    if (top < 8) top = actorRect.bottom + 10
-    top = Math.max(8, Math.min(top, window.innerHeight - height - 8))
-    panel.style.top = top + 'px'
-  }
-
-  function togglePanel() {
-    panelOpen = !panelOpen
-    panel.hidden = !panelOpen
-    if (panelOpen) {
-      renderBalance()
-      panelState.textContent = phaseText()
-      placePanel()
-    }
-  }
-
-  panel.querySelector('.lbd-close').addEventListener('click', function () { panelOpen = false; panel.hidden = true })
-
+  // ── 交互：详情面板 ────────────────────────────────────
   refreshBtn.addEventListener('click', function () {
     refreshBtn.disabled = true
     refreshBtn.textContent = '刷新中…'
@@ -793,18 +972,19 @@
       })
   })
 
-  panel.querySelectorAll('[data-size]').forEach(function (button) {
+  // ── 交互：设置菜单 ────────────────────────────────────
+  menu.querySelectorAll('[data-size]').forEach(function (button) {
     button.addEventListener('click', function () {
       var step = Number(button.getAttribute('data-size'))
       persistSettings({ size: Math.max(96, Math.min(360, settings.size + step * 16)) })
+      setTimeout(function () { if (openPopover === 'menu') placePopover(menu, menu) }, 60)
     })
   })
 
-  panel.querySelectorAll('[data-threshold]').forEach(function (button) {
+  menu.querySelectorAll('[data-threshold]').forEach(function (button) {
     button.addEventListener('click', function () {
       var step = Number(button.getAttribute('data-threshold'))
-      var next = Math.max(0, Math.min(1000, (Number(settings.lowBalance) || 0) + step * 5))
-      persistSettings({ lowBalance: next })
+      persistSettings({ lowBalance: Math.max(0, Math.min(1000, (Number(settings.lowBalance) || 0) + step * 5)) })
       setTimeout(poll, 320)
     })
   })
@@ -812,36 +992,39 @@
   toggleBtn.addEventListener('click', function () {
     var on = !settings.bubble
     persistSettings({ bubble: on })
-    if (!on) hideBubble()
+    if (!on) condense()
+    else showBubble(pick('idle'), { priority: 2 })
   })
 
-  panel.querySelector('.lbd-hide').addEventListener('click', function () {
+  menu.querySelector('.lbd-hide').addEventListener('click', function () {
     persistSettings({ visible: false })
-    panelOpen = false
-    panel.hidden = true
+    closePopovers()
+    condense()
+    bubbleEl.classList.remove('is-show')
   })
 
-  root.querySelector('.lbd-restore').addEventListener('click', function () {
+  restoreBtn.addEventListener('click', function () {
     persistSettings({ visible: true })
     showBubble('我回来了！', { priority: 5, tone: 'happy' })
   })
 
+  // 关闭按钮 / 点外面 / Esc
+  root.querySelectorAll('[data-close]').forEach(function (button) {
+    button.addEventListener('click', function () { closePopovers() })
+  })
   document.addEventListener('click', function (event) {
-    if (!panelOpen) return
+    if (!openPopover) return
     if (root.contains(event.target)) return
-    panelOpen = false
-    panel.hidden = true
+    closePopovers()
   })
-
   document.addEventListener('keydown', function (event) {
-    if (event.key === 'Escape' && panelOpen) {
-      panelOpen = false
-      panel.hidden = true
-    }
+    if (event.key === 'Escape' && openPopover) closePopovers()
   })
-
   window.addEventListener('resize', function () {
-    if (panelOpen) placePanel()
+    schedulePositionTail()
+    if (!openPopover) return
+    var el = openPopover === 'detail' ? detail : menu
+    placePopover(el, bubbleEl)
   })
 
   // ── 启动 ──────────────────────────────────────────────
@@ -860,6 +1043,8 @@
   preload()
   setPhase('idle')
   renderBalance()
+  condense()
+  bubbleEl.classList.add('is-show')
   poll()
   scheduleIdleChat()
 

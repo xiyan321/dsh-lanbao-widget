@@ -24,7 +24,7 @@ const DOCS = path.join(ROOT, 'docs')
 
 const FILES = [
   ['待机.jpeg', path.join(OUT_DIR, 'idle.jpg')],
-  ['思考.jpeg', path.join(OUT_DIR, 'thinking.jpg')],
+  ['思考中.png', path.join(OUT_DIR, 'thinking.jpg')],
   ['忙碌.jpeg', path.join(OUT_DIR, 'busy.jpg')],
   ['开心.jpeg', path.join(OUT_DIR, 'happy.jpg')],
   ['疑惑.jpeg', path.join(OUT_DIR, 'confused.jpg')],

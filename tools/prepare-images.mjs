@@ -38,7 +38,7 @@ const LABELS = { idle: '待机', thinking: '思考', busy: '忙碌', happy: '开
  */
 const SOURCES = {
   idle: '待机.jpeg',
-  thinking: '思考.jpeg',
+  thinking: '思考中.png',
   busy: '忙碌.jpeg',
   happy: '开心.jpeg',
   confused: '疑惑.jpeg',
@@ -126,6 +126,35 @@ function softenAlpha(alpha, width, height) {
   return out
 }
 
+/**
+ * 个别素材的取景和别人不一致时需要单独缩放（否则切表情会"忽大忽小"）。
+ * 0.85：思考中.png 是近景半身，缩到与其它四张头部等大。
+ */
+const SCALES = {
+  thinking: 0.85,
+}
+
+/** 把一帧 rgba 整体缩小后贴回透明画布，水平居中、贴底。 */
+async function fitToCanvas(rgba, width, height, scale) {
+  if (!scale || Math.abs(scale - 1) < 0.001) return rgba
+  const side = Math.max(16, Math.round(width * scale))
+  const scaled = await sharp(rgba, { raw: { width, height, channels: 4 } })
+    .resize(side, side, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .raw()
+    .toBuffer()
+  const canvas = Buffer.alloc(width * height * 4)
+  const left = Math.round((width - side) / 2)
+  const top = height - side
+  for (let y = 0; y < side; y++) {
+    const destY = top + y
+    if (destY < 0 || destY >= height) continue
+    const srcStart = y * side * 4
+    const destStart = (destY * width + left) * 4
+    scaled.copy(canvas, destStart, srcStart, srcStart + side * 4)
+  }
+  return canvas
+}
+
 /** 把一组图处理成「背景透明 + rgba 缓冲 + alpha 包围盒」。 */
 async function build(name) {
   const src = sourceOf(name)
@@ -142,11 +171,7 @@ async function build(name) {
   for (let i = 0; i < alpha.length; i++) alpha[i] = bg[i] ? 0 : 255
   const soft = softenAlpha(alpha, width, height)
 
-  const rgba = Buffer.alloc(width * height * 4)
-  let minX = width
-  let minY = height
-  let maxX = -1
-  let maxY = -1
+  let rgba = Buffer.alloc(width * height * 4)
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const i = y * width + x
@@ -156,7 +181,18 @@ async function build(name) {
       rgba[d + 1] = data[s + 1]
       rgba[d + 2] = data[s + 2]
       rgba[d + 3] = soft[i]
-      if (soft[i] > 8) {
+    }
+  }
+
+  rgba = await fitToCanvas(rgba, width, height, SCALES[name])
+
+  let minX = width
+  let minY = height
+  let maxX = -1
+  let maxY = -1
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (rgba[(y * width + x) * 4 + 3] > 8) {
         if (x < minX) minX = x
         if (y < minY) minY = y
         if (x > maxX) maxX = x
