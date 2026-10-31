@@ -25,9 +25,16 @@
     state: '/dsh-lanbao/state.json',
     settings: '/dsh-lanbao/settings.json',
     refresh: '/dsh-lanbao/refresh.json',
-    expr: function (name) { return '/dsh-lanbao/expr/' + name + '.webp?rev=' + ASSET_REV }
+    expr: function (name) { return '/dsh-lanbao/expr/' + name + '.webp?rev=' + ASSET_REV },
+    audio: function (set, slot) { return '/dsh-lanbao/audio/' + set + '-' + slot + '.wav?rev=' + ASSET_REV }
   }
   var EXPRESSIONS = ['idle', 'thinking', 'busy', 'happy', 'confused']
+  // 音色表：id 必须和宿主 SOUND_SETS、assets/audio 下的文件名前缀一致
+  var SOUND_SETS = [
+    { id: 'bubble', name: '气泡' },
+    { id: 'drop', name: '水滴' },
+    { id: 'squeak', name: '鲨鱼' }
+  ]
   var LABEL = { idle: '待机', thinking: '思考', busy: '忙碌', happy: '开心', confused: '疑惑' }
   var DEFAULTS = {
     visible: true,
@@ -36,7 +43,10 @@
     bottom: 200,
     bubble: true,
     bubbleMs: 6000,
-    lowBalance: 10
+    lowBalance: 10,
+    sound: true,
+    soundVolume: 60,
+    soundSet: 'bubble'
   }
   var POLL_MS = 1200
   var IDLE_CHAT_MIN = 75000
@@ -225,6 +235,25 @@
     '    <button class="lbd-toggle" type="button" data-toggle="bubble">开</button>',
     '  </div>',
     '  <div class="lbd-row">',
+    '    <label>音效</label>',
+    '    <button class="lbd-toggle" type="button" data-toggle="sound">开</button>',
+    '  </div>',
+    '  <div class="lbd-row">',
+    '    <label>音量</label>',
+    '    <div class="lbd-stepper">',
+    '      <button type="button" data-volume="-1">−</button>',
+    '      <span class="lbd-volume-val">60%</span>',
+    '      <button type="button" data-volume="1">+</button>',
+    '    </div>',
+    '  </div>',
+    '  <div class="lbd-row">',
+    '    <label>音色</label>',
+    '    <div class="lbd-sound-tools">',
+    '      <button class="lbd-sound-set" type="button">气泡</button>',
+    '      <button class="lbd-sound-try" type="button">试听</button>',
+    '    </div>',
+    '  </div>',
+    '  <div class="lbd-row">',
     '    <label>余额</label>',
     '    <button class="lbd-open-detail" type="button">查看详情</button>',
     '  </div>',
@@ -327,6 +356,12 @@
     '.lbd-open-detail{border:1px solid rgba(38,74,140,.18);background:#fff;border-radius:8px;padding:3px 10px;font:inherit;',
     '  font-size:12px;color:#2a3d5c;cursor:pointer}',
     '.lbd-open-detail:hover{background:rgba(61,123,214,.08)}',
+    '.lbd-sound-tools{display:inline-flex;gap:6px}',
+    '.lbd-sound-set,.lbd-sound-try{border:1px solid rgba(38,74,140,.18);background:#fff;border-radius:8px;padding:3px 10px;',
+    '  font:inherit;font-size:12px;color:#2a3d5c;cursor:pointer}',
+    '.lbd-sound-set{min-width:52px}',
+    '.lbd-sound-set:hover,.lbd-sound-try:hover{background:rgba(61,123,214,.08)}',
+    '.lbd-sound-try:active{transform:translateY(1px)}',
     '.lbd-row-end{border-top:1px solid rgba(38,74,140,.1);padding-top:9px;margin-top:1px}',
     '.lbd-hide{border:0;background:transparent;color:#a03636;font:inherit;font-size:12px;cursor:pointer;padding:2px 4px;border-radius:6px}',
     '.lbd-hide:hover{background:rgba(196,52,52,.09)}',
@@ -401,6 +436,10 @@
   var sizeVal = root.querySelector('.lbd-size-val')
   var thresholdVal = root.querySelector('.lbd-threshold-val')
   var toggleBtn = root.querySelector('[data-toggle="bubble"]')
+  var soundToggleBtn = root.querySelector('[data-toggle="sound"]')
+  var volumeVal = root.querySelector('.lbd-volume-val')
+  var soundSetBtn = root.querySelector('.lbd-sound-set')
+  var soundTryBtn = root.querySelector('.lbd-sound-try')
 
   if (REDUCED) root.classList.add('is-reduced')
 
@@ -612,6 +651,20 @@
     thresholdVal.textContent = '¥' + settings.lowBalance
     toggleBtn.textContent = settings.bubble ? '开' : '关'
     toggleBtn.classList.toggle('is-on', !!settings.bubble)
+
+    var soundOn = settings.sound !== false
+    var soundVol = Number(settings.soundVolume)
+    if (!isFinite(soundVol)) soundVol = DEFAULTS.soundVolume // 宿主还没下发这个字段时别显示 NaN%
+    soundToggleBtn.textContent = soundOn ? '开' : '关'
+    soundToggleBtn.classList.toggle('is-on', soundOn)
+    volumeVal.textContent = Math.round(Math.max(0, Math.min(100, soundVol))) + '%'
+    soundSetBtn.textContent = soundSetName(settings.soundSet)
+    // 开着就把当前音色预取一遍，第一次点按下才不会有解码延迟
+    if (soundOn) {
+      var warmSet = settings.soundSet || DEFAULTS.soundSet
+      soundAudio(warmSet, 'press')
+      soundAudio(warmSet, 'release')
+    }
     positionFromSettings()
     schedulePositionTail()
   }
@@ -868,6 +921,76 @@
       })
   }
 
+  // ── 点触音效 ──────────────────────────────────────────
+  // 按下 / 松开各一条，Audio 元素按音色懒建后复用（连点不会堆出一串重叠音）。
+  // 浏览器的自动播放限制靠「用户手势」解锁：pointerdown / keydown 本身就是手势，
+  // 所以第一次点就有声，不需要额外的"点一下开启声音"。
+  var soundCache = {}
+  var lastPressSoundAt = 0
+
+  function soundSetName(id) {
+    for (var i = 0; i < SOUND_SETS.length; i++) {
+      if (SOUND_SETS[i].id === id) return SOUND_SETS[i].name
+    }
+    return SOUND_SETS[0].name
+  }
+
+  function soundAudio(set, slot) {
+    var key = set + '-' + slot
+    if (soundCache[key]) return soundCache[key]
+    var el = null
+    try {
+      el = new Audio(API.audio(set, slot))
+      el.preload = 'auto'
+      soundCache[key] = el
+    } catch (e) {
+      el = null
+    }
+    return el
+  }
+
+  /** 0–100 的设置值 → Audio.volume（留 10% 余量，避免和页面其它声音叠在一起过冲）。 */
+  function soundGain() {
+    var v = Number(settings.soundVolume)
+    if (!isFinite(v)) v = DEFAULTS.soundVolume
+    v = Math.max(0, Math.min(100, v))
+    return (v / 100) * 0.9
+  }
+
+  function playSound(slot, force) {
+    if (!force && settings.sound === false) return
+    var set = settings.soundSet || DEFAULTS.soundSet
+    var el = soundAudio(set, slot)
+    if (!el) return
+    try {
+      el.pause()
+      el.currentTime = 0
+      el.volume = soundGain()
+      // ±3% 音高抖动：连点几十次也不会听起来像复读机
+      el.playbackRate = 1 + (Math.random() * 0.06 - 0.03)
+    } catch (e) {}
+    var p = el.play()
+    if (p && typeof p.catch === 'function') p.catch(function () {})
+  }
+
+  function playPressSound() {
+    var now = Date.now()
+    // 极短间隔连点只播第一下，免得重叠成噪音
+    if (now - lastPressSoundAt < 55) return
+    lastPressSoundAt = now
+    playSound('press')
+  }
+
+  function playReleaseSound() {
+    playSound('release')
+  }
+
+  /** 菜单里的「试听」：按下 → 150ms 后松开，模拟真实点一下的听感。 */
+  function soundTry() {
+    playSound('press', true)
+    window.setTimeout(function () { playSound('release', true) }, 150)
+  }
+
   // ── 设置写回 ──────────────────────────────────────────
   var saveTimer = 0
   function persistSettings(patch) {
@@ -913,6 +1036,9 @@
   actor.addEventListener('keydown', function (event) {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
+      // 键盘没有 pointerdown/up，手动补一对，手感和鼠标一致
+      playPressSound()
+      window.setTimeout(playReleaseSound, 120)
       pet()
     }
     // 键盘唤起菜单（等价于右键）
@@ -942,6 +1068,20 @@
   })
   actor.addEventListener('pointerup', function () { window.clearTimeout(longPressTimer) })
   actor.addEventListener('pointercancel', function () { window.clearTimeout(longPressTimer) })
+
+  // 点触音效：按下 / 松开。和拖动、长按、右键各走各的，互不干扰。
+  actor.addEventListener('pointerdown', function (event) {
+    if (event.button !== 0) return
+    playPressSound()
+  })
+  actor.addEventListener('pointerup', function (event) {
+    if (event.button !== 0) return
+    playReleaseSound()
+  })
+  actor.addEventListener('pointercancel', function () {
+    // 手势被系统收走时不会有 pointerup，重置节流，别让下一次点击被吃掉
+    lastPressSoundAt = 0
+  })
 
   // 拖拽：用 pointer 事件，落位写回设置
   actor.addEventListener('pointerdown', function (event) {
@@ -1063,6 +1203,34 @@
       showBubble(pick('idle'), { priority: 2 })
     }
   })
+
+  // —— 音效：开关 / 音量 / 音色 / 试听 ——
+  soundToggleBtn.addEventListener('click', function () {
+    var on = settings.sound === false
+    persistSettings({ sound: on })
+    if (on) playSound('press', true)
+  })
+
+  menu.querySelectorAll('[data-volume]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var step = Number(button.getAttribute('data-volume'))
+      var next = Math.max(0, Math.min(100, (Number(settings.soundVolume) || 0) + step * 10))
+      persistSettings({ soundVolume: next })
+      soundTry()
+    })
+  })
+
+  soundSetBtn.addEventListener('click', function () {
+    var idx = 0
+    for (var i = 0; i < SOUND_SETS.length; i++) {
+      if (SOUND_SETS[i].id === settings.soundSet) idx = i
+    }
+    var next = SOUND_SETS[(idx + 1) % SOUND_SETS.length]
+    persistSettings({ soundSet: next.id })
+    soundTry()
+  })
+
+  soundTryBtn.addEventListener('click', soundTry)
 
   menu.querySelector('.lbd-open-detail').addEventListener('click', function () {
     closePopovers()

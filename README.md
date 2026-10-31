@@ -41,12 +41,33 @@
 
 | 操作 | 效果 |
 |---|---|
-| 左键点角色 | 「开心」+ 说一句 + **显示余额** |
+| 左键点角色 | 「开心」+ 说一句 + **显示余额** + 一声点触音效 |
 | 点气泡 | 打开**余额详情**：余额、赠金、充值、阈值、上轮花费、刷新按钮 |
-| 右击角色 | 打开**设置菜单**：大小、低余额提醒、气泡台词、余额详情、隐藏蓝宝 |
+| 右击角色 | 打开**设置菜单**：大小、低余额提醒、气泡台词、**音效开关 / 音量 / 音色 / 试听**、余额详情、隐藏蓝宝 |
 | 拖住角色 | 换位置，自动记住 |
 | 长按角色（触屏） | 同右击 |
 | Esc / 点空白 | 关掉弹层 |
+
+### 点触音效
+
+点角色时会响一对短音：**按下**一声、**松开**一声，规格是 44.1kHz / 单声道 / 16bit PCM，峰值 −6dBFS。
+按下音控制在 80–140ms，松开音 160–200ms —— 超过 200ms 就会觉得"黏手"。
+
+三套音色（`assets/audio/<音色>-press.wav` 与 `-release.wav`）：
+
+| 音色 | id | 按下 | 松开 | 适合 |
+|---|---|---|---|---|
+| 气泡 | `bubble` | 上浮的「啵」 | 水滴「叮」 | **默认**，最贴深海人设 |
+| 水滴 | `drop` | 软木轻点 | 水滴下坠 | 最安静，不抢注意力 |
+| 鲨鱼 | `squeak` | 短促上扬 | 回落 | 最像玩具，最皮 |
+
+- **调音量**：右击角色 → 「音量」那一行 `−` / `+`，每次 10%，范围 0–100%；「试听」会按当前音色连播一对。
+- **换音色**：「音色」那一行点一下循环切换，切换后自动试听。
+- **关掉**：「音效」那一行切成「关」。关掉后点角色不响，但试听按钮仍然出声（方便你调音量时确认）。
+- **连点不炸**：55ms 内的连点只播第一下；每次播放带 ±3% 的音高抖动，所以连点不会像复读机。
+- **改音色 / 重生成**：编辑 `tools/make-sounds.mjs` 里的合成函数，跑 `node tools/make-sounds.mjs` 重出六个 wav。
+  想加第四套音色：脚本里加一套、`lib/index.js` 的 `SOUND_SETS` 与 `assets/lanbao-widget.js` 的 `SOUND_SETS` 各加一行。
+- **单独听**：右击角色 → 「音色」旁边点「试听」，会按当前音色连播一对，不用去点角色。
 
 ## 二、余额提示怎么工作
 
@@ -115,6 +136,9 @@ dsh plugin --profile web remove dsh-lanbao-widget
 | `userRefreshMs` | `3000` | 手动刷新最小间隔 |
 | `apiKeyRef` | `DEEPSEEK_API_KEY` | 读哪个凭据名 |
 | `alertWindowMs` | `30000` | 余额越线后维持「疑惑」的窗口 |
+| `sound` | `true` | 点触音效总开关 |
+| `soundVolume` | `60` | 音效音量（0–100） |
+| `soundSet` | `bubble` | 音色：`bubble` / `drop` / `squeak` |
 
 ## 五、接口
 
@@ -127,6 +151,7 @@ dsh plugin --profile web remove dsh-lanbao-widget
 | `GET /dsh-lanbao/settings.json` | 读设置；`POST` 写设置 |
 | `GET /dsh-lanbao/health.json` | 排障：文件是否齐全、有没有凭据服务 |
 | `GET /dsh-lanbao/expr/<name>.webp` | 五张表情图 |
+| `GET /dsh-lanbao/audio/<set>-<slot>.wav` | 点触音效（`set` 限 `bubble`/`drop`/`squeak`，`slot` 为 `press`/`release`），带 ETag |
 | `GET /dsh-lanbao/widget.js` | 浏览器端脚本 |
 
 ## 六、目录结构
@@ -137,9 +162,11 @@ dsh-lanbao-widget/
 ├─ assets/
 │  ├─ lanbao-widget.js       浏览器端：表情切换、气泡台词、余额面板、拖拽
 │  ├─ expressions/*.webp     五张透明底表情（640×640，WebP 带 alpha）
+│  ├─ audio/*.wav            三套点触音效（按下 / 松开），由 tools/make-sounds.mjs 生成
 │  └─ source/*.jpg           设计稿存档（1024 长边），供重新生成
 ├─ docs/                     README 用的预览图与角色设定图
 ├─ tools/
+│  ├─ make-sounds.mjs        合成三套点触音效 → assets/audio/*.wav（纯 Node，零依赖）
 │  ├─ prepare-images.mjs     设计稿 → 去白底 / 统一裁切 → WebP
 │  ├─ import-sources.mjs     把设计稿缩成 assets/source/*.jpg
 │  ├─ contact-sheet.mjs      出五连对比图，检查换表情时大小是否一致
@@ -178,9 +205,10 @@ dsh-lanbao-widget/
 ## 八、开发与验证
 
 ```powershell
-node tools/smoke-test.mjs     # 宿主端：状态机 / 余额分档 / 越权 / 缓存
+node tools/smoke-test.mjs     # 宿主端：状态机 / 余额分档 / 越权 / 缓存 / 音效设置与音频路由
 node tools/preview.mjs        # 浏览器端：五种情境截图 + 29 项交互回归
 node tools/prepare-images.mjs # 换设计稿后重出表情（LANBAO_SRC 可指定目录）
+node tools/make-sounds.mjs    # 重出点触音效（--set bubble 可只做一套）
 ```
 
 `preview.mjs` 需要有 Chromium 系浏览器（Edge / Chrome）以及 `sharp`、`puppeteer-core`
@@ -188,30 +216,7 @@ node tools/prepare-images.mjs # 换设计稿后重出表情（LANBAO_SRC 可指�
 `LANBAO_BROWSER=<路径>` 指定浏览器）。`smoke-test.mjs` 零依赖，CI 里跑的就是它
 （见 `.github/workflows/ci.yml`）。
 
-## 九、发布到 GitHub / npm
-
-仓库地址：<https://github.com/xiyan321/dsh-lanbao-widget>
-
-日常提交：
-
-```powershell
-git add -A
-git commit -m "feat: ..."
-git push
-```
-
-发布到 npm（可选）：
-
-```powershell
-npm pack --dry-run   # 先看会打包哪些文件
-npm publish          # 按 files 白名单打包
-```
-
-发布前只剩署名可改：`LICENSE` 与 `package.json` 的 `author` 目前都是 `李苒`。
-
-`tools/private/`（本机验证脚本，会读写 `~/.dsh` 凭据）已被 `.gitignore` 排除，不会进仓库。
-
-## 十、排障
+## 九、排障
 
 1. **页面右下角什么都没有**
    - `curl http://127.0.0.1:3080/dsh-lanbao/health.json`，能返回 JSON 说明宿主端在；
@@ -227,7 +232,5 @@ npm publish          # 按 files 白名单打包
    - 表情 URL 会带 `?rev=<版本号>`：宿主按表情文件的 mtime 生成，换图后自动变化；
    - 宿主还没重载时客户端用内置兜底版本号（`ASSET_REV`），改图时记得把它一起加一；
    - 想立刻看到效果就刷新页面；实在不行按 `Ctrl+F5` 强刷。
-
-## 许可
 
 代码 MIT，美术素材的范围见 [PROVENANCE.md](PROVENANCE.md)。

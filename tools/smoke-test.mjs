@@ -136,6 +136,7 @@ const refresh = async () => (await call('exact', '/dsh-lanbao/refresh.json', { m
 for (const key of [
   'exact:/dsh-lanbao/widget.js',
   'prefix:/dsh-lanbao/expr',
+  'prefix:/dsh-lanbao/audio',
   'exact:/dsh-lanbao/state.json',
   'exact:/dsh-lanbao/settings.json',
   'exact:/dsh-lanbao/refresh.json',
@@ -159,6 +160,19 @@ assert.equal(idlePng.headers['Content-Type'], 'image/webp')
 
 const badPng = await call('prefix', '/dsh-lanbao/expr', { url: '/dsh-lanbao/expr/passwd' })
 assert.equal(badPng.statusCode, 404, '未知表情应 404')
+
+// 点触音效：白名单内 200（audio/wav）、未登记的音色 404、路径穿越 404
+const pressWav = await call('prefix', '/dsh-lanbao/audio', { url: '/dsh-lanbao/audio/bubble-press.wav' })
+assert.equal(pressWav.statusCode, 200, '按下音应可取到')
+assert.equal(pressWav.headers['Content-Type'], 'audio/wav')
+const releaseWav = await call('prefix', '/dsh-lanbao/audio', { url: '/dsh-lanbao/audio/squeak-release.wav' })
+assert.equal(releaseWav.statusCode, 200, '松开音应可取到')
+
+const unknownSet = await call('prefix', '/dsh-lanbao/audio', { url: '/dsh-lanbao/audio/evil-press.wav' })
+assert.equal(unknownSet.statusCode, 404, '未登记的音色应 404')
+
+const traversal = await call('prefix', '/dsh-lanbao/audio', { url: '/dsh-lanbao/audio/..%2F..%2Fpackage.json' })
+assert.equal(traversal.statusCode, 404, '路径穿越应 404')
 
 const health = (await call('exact', '/dsh-lanbao/health.json')).json()
 assert.equal(health.ok, true)
@@ -308,6 +322,31 @@ assert.equal(settingsBody.settings.bubble, false)
 settingsBody = await postSettings({ size: 99999, lowBalance: -5 })
 assert.equal(settingsBody.settings.size, 360, 'size 未夹紧')
 assert.equal(settingsBody.settings.lowBalance, 0, 'lowBalance 未夹紧')
+
+// —— 音效设置：默认值、夹紧、白名单 ——
+assert.equal(settingsBody.settings.sound, true, '音效应默认开')
+assert.equal(settingsBody.settings.soundVolume, 60, '音量默认 60')
+assert.equal(settingsBody.settings.soundSet, 'bubble', '默认音色应为 bubble')
+
+settingsBody = await postSettings({ sound: false, soundVolume: 150, soundSet: 'squeak' })
+assert.equal(settingsBody.settings.sound, false)
+assert.equal(settingsBody.settings.soundVolume, 100, '音量应夹到 100')
+assert.equal(settingsBody.settings.soundSet, 'squeak')
+
+settingsBody = await postSettings({ soundVolume: -20, soundSet: 'nope' })
+assert.equal(settingsBody.settings.soundVolume, 0, '音量应夹到 0')
+assert.equal(settingsBody.settings.soundSet, 'squeak', '未登记的音色不应写进设置')
+
+// 落盘后重新读也要在（PERSISTED_KEYS 覆盖到了新字段）
+const reread = (await call('exact', '/dsh-lanbao/settings.json')).json()
+assert.equal(reread.settings.sound, false)
+assert.equal(reread.settings.soundSet, 'squeak')
+
+// state.json 要把音效设置一并下发，前端才能渲染菜单
+const withSound = await state()
+assert.equal(withSound.settings.sound, false)
+assert.equal(withSound.settings.soundVolume, 0)
+assert.equal(withSound.settings.soundSet, 'squeak')
 
 const crossRes = makeRes()
 await routes.get('exact:/dsh-lanbao/state.json').handler(
